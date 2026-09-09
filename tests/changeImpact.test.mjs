@@ -242,6 +242,7 @@ describe('change impact advisor §impact1', () => {
     for (const helperName of [
       'adminConfigRuntimeFixture.mjs',
       'apiRateLimitFixture.mjs',
+      'childAccessRequestFixture.mjs',
       'controlRuntimeFixture.mjs',
       'pairingRuntimeFixture.mjs',
       'routerRuntimeFixture.mjs',

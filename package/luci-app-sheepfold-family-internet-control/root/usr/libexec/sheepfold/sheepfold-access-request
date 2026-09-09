@@ -6,7 +6,24 @@ LOG_HELPER="/usr/libexec/sheepfold/sheepfold-log"
 MAX_AGE_SECONDS=86400
 
 json_escape() {
-    printf '%s' "$1" | tr '\n\r\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
+    # Не заменяем пользовательский текст пробелами: JSON требует escaping всех
+    # control-байтов. Дополнительный LF сохраняет исходные переводы строк в awk.
+    printf '%s\n' "${1:-}" | LC_ALL=C awk '
+        BEGIN {
+            for (code = 1; code < 32; code++)
+                escaped[sprintf("%c", code)] = sprintf("\\u%04x", code)
+        }
+        {
+            if (NR > 1) printf "\\n"
+            for (pos = 1; pos <= length($0); pos++) {
+                char = substr($0, pos, 1)
+                if (char == "\\") printf "\\\\"
+                else if (char == "\"") printf "\\\""
+                else if (char in escaped) printf "%s", escaped[char]
+                else printf "%s", char
+            }
+        }
+    '
 }
 
 normalize_mac() { printf '%s' "$1" | tr 'a-z' 'A-Z'; }
@@ -41,6 +58,8 @@ admin_section_for_login() {
 }
 
 requests_enabled() {
+    # Вызов идёт в том же shell: цикл не должен заменить секцию ребёнка родителем.
+    local section
     for section in $(uci -q show sheepfold 2>/dev/null | sed -n 's/^sheepfold\.\([^.=]*\)=administrator$/\1/p'); do
         [ "$(uci -q get "sheepfold.$section.allow_child_access_requests" 2>/dev/null || printf 0)" = 1 ] && return 0
     done
@@ -64,6 +83,19 @@ cleanup_expired() {
     done
 }
 
+log_request() {
+    local message
+    message="$1"
+    if [ -x "$LOG_HELPER" ] && "$LOG_HELPER" "$message" >/dev/null 2>&1; then
+        return 0
+    fi
+    if command -v logger >/dev/null 2>&1 && logger -t sheepfold-access-request "$message" >/dev/null 2>&1; then
+        return 0
+    fi
+    printf 'Sheepfold access request saved, but diagnostic logging failed.\n' >&2
+    return 0
+}
+
 create_request() {
     remote_ip="$1"
     mac="$(mac_for_ip "$remote_ip")"
@@ -76,7 +108,8 @@ create_request() {
     mkdir -p "$STATE_DIR"
     chmod 700 "$STATE_DIR" 2>/dev/null || true
     cleanup_expired
-    device_id="$(/usr/libexec/sheepfold/sheepfold-device-id ensure "$section" 2>/dev/null || true)"
+    # ID может быть напечатан до commit; частичный вывод не подтверждает успех.
+    device_id="$(/usr/libexec/sheepfold/sheepfold-device-id ensure "$section" 2>/dev/null)" || return 5
     # ID участвует в имени временного файла, поэтому здесь допустимы только цифры.
     case "$device_id" in ''|*[!0-9]*) return 2 ;; esac
     device_name="$(uci -q get "sheepfold.$section.name" 2>/dev/null || true)"
@@ -108,9 +141,8 @@ create_request() {
     chmod 600 "$tmp" 2>/dev/null || true
     mv -f "$tmp" "$file"
 
-    if [ -x "$LOG_HELPER" ]; then
-        "$LOG_HELPER" "Устройство #${device_id:-?} ${device_name:-$mac} попросило 30 минут доступа в интернет"
-    fi
+    # Просьба уже сохранена: диагностика не отменяет её и не загрязняет JSON.
+    log_request "Устройство #${device_id:-?} ${device_name:-$mac} попросило 30 минут доступа в интернет"
     printf '{"app":"sheepfold","ok":true,"requestId":"%s","duplicate":false}\n' "$(json_escape "$request_id")"
 }
 

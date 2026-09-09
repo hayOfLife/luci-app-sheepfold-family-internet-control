@@ -204,3 +204,10 @@ API `/cgi-bin/sheepfold-api/client-status` возвращает `warning_before_
 - [Единый запуск LuCI-команд](luci-command-actions.ru.md) — stable action key, duplicate-click coalescing, structured errorCode и локальная перерисовка (§apicon1).
 - [Persistence-адаптеры LuCI](luci-persistence-adapters.ru.md) — UCI apply, device/DHCP/runtime, Wi-Fi reload, backup rollback и pairing (§persist1).
 - [Финальная зачистка LuCI coordinator](luci-coordinator-cleanup.ru.md) — удалённые forwarding helpers и допустимая оставшаяся orchestration-граница (§coordclean1).
+
+## Продолжение аудита принятой r297
+
+[r298: просьбы ребёнка](audit-fixes-r298.ru.md) продолжает принятую владельцем
+`bdb3a92`, сохраняет доработки runner/CI и добавляет B61–B64. Следующий узкий
+воспроизводимый аудит — чтение и конкуренция RAM-очереди просьб (R11), не изменение
+правил выдачи доступа. Общая карта причин — [реестр ошибок](bug-register.ru.md).

@@ -589,3 +589,13 @@ pairing-библиотеки; положительный тест принима
 успешным `changes` только для своих тестов без pending. Поведение production не
 подменяется. Новые сценарии также запускаются с `SHEEPFOLD_ADMIN_TEST_SOURCE` на
 базовом r296. Команды и результаты — в [отчёте r297](audit-fixes-r297.ru.md).
+
+## Просьбы ребёнка: runtime r298
+
+`tests/childAccessRequestRuntime.test.mjs` и
+`tests/helpers/childAccessRequestFixture.mjs` запускают реальные queue-helper,
+ID-helper и CGI; UCI, DHCP/ARP, auth и часы моделируются. Отказы журналов, mkdir,
+публикации и ID обязаны оставить trace. Fixture использует системный sh/Git Bash,
+а не автоматически выбранный BusyBox shell. Подробные команды, 26 сценариев,
+базовые отказы и профильный набор 170 тестов: [r298](audit-fixes-r298.ru.md).
+Тест относится к backend/security/messaging, не к изменению Android runtime.

@@ -1,5 +1,15 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-09, **r298**, based on accepted `bdb3a92` (r297).
+B61–B64 fix child-request identity scope, ID command outcome, post-save logging,
+parent-list failure status and JSON control-byte encoding. 170 focused tests pass;
+26 new scenarios fail/pass as 15/11 on the baseline and pass as 26/26 after the fix.
+Accepted test/CI changes are retained. Queue concurrency and suppressed internal
+reads remain R11. No new Android/SDK/live-device success is claimed here.
+See the [r298 report](audit-fixes-r298.ru.md) and [bug register](bug-register.ru.md).
+
+Historical continuation:
+
 Focused continuation: 2026-09-09, **r297**, based on r296 `89b7093`.
 Admin transactions use fresh owned recovery directories and verify snapshots before
 mutation. Wi-Fi writes use private deltas; common admin transactions and Wi-Fi reject
@@ -181,10 +191,10 @@ quarantine, automatic groups, notifications and firewall effects is
 [`device-passport-and-control.ru.md`](device-passport-and-control.ru.md) (§devpas1). Focused
 device documents supplement that contract instead of redefining it.
 
-Current local r297 test-package name produced by `scripts/build-test-ipk.py` (not an SDK release):
+Current local r298 test-package name produced by `scripts/build-test-ipk.py` (not an SDK release):
 
 ```text
-luci-app-sheepfold-family-internet-control_0.1.0-297_all.ipk
+luci-app-sheepfold-family-internet-control_0.1.0-298_all.ipk
 ```
 
 This local fixture uses `Architecture: all` because it contains LuCI assets, shell scripts, UCI defaults, init/hotplug scripts, CGI endpoints, and rpcd ACL files without native binaries. Official OpenWrt SDK artifacts use the format-native architecture metadata described below.

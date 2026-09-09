@@ -312,6 +312,7 @@ case "$path_info" in
                 2) status="404 Not Found"; error="device_not_registered"; message="Router could not identify this device." ;;
                 3) status="403 Forbidden"; error="access_requests_disabled"; message="No administrator accepts access requests." ;;
                 4) status="403 Forbidden"; error="administrator_device"; message="Administrator devices cannot send child access requests." ;;
+                5) status="503 Service Unavailable"; error="access_request_unavailable"; message="Could not confirm the device ID. Try again later." ;;
                 *) status="500 Internal Server Error"; error="request_failed"; message="Could not save access request." ;;
             esac
             header_json "$status"
@@ -377,8 +378,15 @@ case "$path_info" in
         [ "$method" = "GET" ] || method_not_allowed
         enforce_rate_limit admin_read 120 60
         require_admin
-        header_json "200 OK"
-        "$ACCESS_REQUEST" list "$authenticated_admin_login"
+        # Сначала подтверждаем весь результат helper, затем отправляем HTTP status.
+        # Иначе ошибка оставляет уже выданный 200 с обрезанным JSON/пустым телом.
+        if output="$("$ACCESS_REQUEST" list "$authenticated_admin_login" 2>/dev/null)"; then
+            header_json "200 OK"
+            printf '%s\n' "$output"
+        else
+            header_json "503 Service Unavailable"
+            printf '{"app":"sheepfold","ok":false,"error":"access_requests_unavailable"}\n'
+        fi
         ;;
     /notifications)
         [ "$method" = "GET" ] || method_not_allowed
