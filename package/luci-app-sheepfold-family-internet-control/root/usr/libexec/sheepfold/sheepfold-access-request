@@ -1,9 +1,16 @@
 #!/bin/sh
+# Очередь добровольных просьб: только RAM, без выдачи доступа. create/list/TTL
+# согласованы отдельным lock; неисправную запись не удаляем как просроченную.
+# Это не транзакция с UCI, не доставка уведомления и не сохранность после reboot.
 set -eu
+umask 077
+
+. /usr/libexec/sheepfold/sheepfold-lock-common
 
 STATE_DIR="/tmp/sheepfold/access-requests"
 LOG_HELPER="/usr/libexec/sheepfold/sheepfold-log"
 MAX_AGE_SECONDS=86400
+REQUEST_TEMP_FILE=""
 
 json_escape() {
     # Не заменяем пользовательский текст пробелами: JSON требует escaping всех
@@ -66,20 +73,92 @@ requests_enabled() {
     return 1
 }
 
-value_from_file() {
-    key="$1"
-    file="$2"
-    sed -n "s/^$key=//p" "$file" 2>/dev/null | sed -n '1p'
+request_cleanup() {
+    # Удаляется только временный файл этой операции, не чужая аварийная копия.
+    [ -z "$REQUEST_TEMP_FILE" ] || rm -f "$REQUEST_TEMP_FILE" 2>/dev/null || true
+    sheepfold_lock_release
+}
+
+request_lock_queue() {
+    local lock_path lock_parent wait_seconds waited_seconds
+    [ ! -L "$STATE_DIR" ] || return 5
+    mkdir -p "$STATE_DIR" 2>/dev/null || return 5
+    chmod 700 "$STATE_DIR" 2>/dev/null || return 5
+    lock_path="$STATE_DIR/.queue.lock"
+    [ ! -L "$lock_path" ] || return 5
+    [ ! -e "$lock_path" ] || [ -f "$lock_path" ] || return 5
+    # Не удаляем lock-файл: ожидающий процесс должен держать тот же inode.
+    : >> "$lock_path" || return 5
+    trap 'request_cleanup' EXIT
+    trap 'exit 5' HUP INT TERM
+    sheepfold_lock_acquire "$lock_path" 3 >/dev/null 2>&1 || return 5
+}
+
+request_time() {
+    local value
+    value="$1"
+    case "$value" in ''|*[!0-9]*) return 5 ;; esac
+    while [ "${value#0}" != "$value" ] && [ "${#value}" -gt 1 ]; do value="${value#0}"; done
+    [ "${#value}" -le 10 ] && [ "$value" -gt 0 ] || return 5
+    printf '%s\n' "$value"
+}
+
+read_request() {
+    local file data key value
+    file="$1"
+    [ -f "$file" ] && [ ! -L "$file" ] || return 5
+    # Один reader подтверждает всю запись. Ошибка I/O или повреждение не равны
+    # отсутствию просьбы; частичный stdout не используется даже при похожих полях.
+    data="$(LC_ALL=C awk '
+        BEGIN {
+            split("id created_at device_id device_name ip mac", fields, " ")
+            for (i = 1; i <= 6; i++) required[fields[i]] = 1
+        }
+        {
+            sep = index($0, "=")
+            key = substr($0, 1, sep - 1)
+            if (!sep || !(key in required) || seen[key]++) { bad = 1; next }
+            value[key] = substr($0, sep + 1)
+        }
+        END {
+            for (i = 1; i <= 6; i++) if (seen[fields[i]] != 1) bad = 1
+            if (value["id"] !~ /^[0-9]+-[0-9]+$/ || value["device_id"] !~ /^[0-9]+$/) bad = 1
+            stamp = value["created_at"]
+            if (stamp !~ /^[0-9]+$/) bad = 1
+            sub(/^0+/, "", stamp)
+            if (length(stamp) > 10 || stamp + 0 <= 0) bad = 1
+            if (bad) exit 5
+            for (i = 1; i <= 6; i++) {
+                key = fields[i]
+                if (key == "created_at") printf "%s=%.0f\n", key, stamp + 0
+                else printf "%s=%s\n", key, value[key]
+            }
+        }
+    ' "$file")" || return 5
+    # Не исполняем сохранённые строки как shell. Имена полей фиксированы.
+    while IFS='=' read -r key value; do
+        case "$key" in
+            id) REQUEST_ID="$value" ;;
+            created_at) REQUEST_CREATED_AT="$value" ;;
+            device_id) REQUEST_DEVICE_ID="$value" ;;
+            device_name) REQUEST_DEVICE_NAME="$value" ;;
+            ip) REQUEST_IP="$value" ;;
+            mac) REQUEST_MAC="$value" ;;
+        esac
+    done <<EOF
+$data
+EOF
 }
 
 cleanup_expired() {
-    now="$(date +%s)"
+    local file
+    # Часы подтверждены до первого удаления. Вычитание — только десятичные числа.
     for file in "$STATE_DIR"/*.request; do
-        [ -f "$file" ] || continue
-        created_at="$(value_from_file created_at "$file")"
-        case "$created_at" in ''|*[!0-9]*) rm -f "$file"; continue ;; esac
-        [ "$created_at" -le "$now" ] || { rm -f "$file"; continue; }
-        [ $((now - created_at)) -le "$MAX_AGE_SECONDS" ] || rm -f "$file"
+        [ -e "$file" ] || [ -L "$file" ] || continue
+        read_request "$file" || return 5
+        if [ "$REQUEST_CREATED_AT" -gt "$now" ] || [ $((now - REQUEST_CREATED_AT)) -gt "$MAX_AGE_SECONDS" ]; then
+            rm -f "$file" || return 5
+        fi
     done
 }
 
@@ -97,6 +176,7 @@ log_request() {
 }
 
 create_request() {
+    local temp_file stored_name
     remote_ip="$1"
     mac="$(mac_for_ip "$remote_ip")"
     [ -n "$mac" ] || return 2
@@ -105,9 +185,6 @@ create_request() {
     [ "$(uci -q get "sheepfold.$section.admin_device" 2>/dev/null || printf 0)" != 1 ] || return 4
     requests_enabled || return 3
 
-    mkdir -p "$STATE_DIR"
-    chmod 700 "$STATE_DIR" 2>/dev/null || true
-    cleanup_expired
     # ID может быть напечатан до commit; частичный вывод не подтверждает успех.
     device_id="$(/usr/libexec/sheepfold/sheepfold-device-id ensure "$section" 2>/dev/null)" || return 5
     # ID участвует в имени временного файла, поэтому здесь допустимы только цифры.
@@ -115,31 +192,37 @@ create_request() {
     device_name="$(uci -q get "sheepfold.$section.name" 2>/dev/null || true)"
     [ -n "$device_name" ] || device_name="$(awk -v ip="$remote_ip" '$3 == ip { print $4; exit }' /tmp/dhcp.leases 2>/dev/null || true)"
     [ "$device_name" != '*' ] || device_name=''
-    now="$(date +%s)"
+    # ID-подготовка не держит queue-lock и не наследует его в UCI helper.
+    request_lock_queue || return 5
+    now="$(date +%s)" || return 5
+    now="$(request_time "$now")" || return 5
+    cleanup_expired || return 5
 
-    # Повторное нажатие обновляет существующую просьбу, а не создаёт поток уведомлений.
+    # Повторное нажатие возвращает прежнюю просьбу; TTL не продлевается.
     for file in "$STATE_DIR"/*.request; do
-        [ -f "$file" ] || continue
-        [ "$(value_from_file device_id "$file")" = "$device_id" ] || continue
-        request_id="$(value_from_file id "$file")"
+        [ -e "$file" ] || [ -L "$file" ] || continue
+        read_request "$file" || return 5
+        [ "$REQUEST_DEVICE_ID" = "$device_id" ] || continue
+        request_id="$REQUEST_ID"
         printf '{"app":"sheepfold","ok":true,"requestId":"%s","duplicate":true}\n' "$(json_escape "$request_id")"
         return 0
     done
 
     request_id="${now}-${device_id:-unknown}"
     file="$STATE_DIR/$request_id.request"
-    tmp="$file.tmp.$$"
-    umask 077
-    {
-        printf 'id=%s\n' "$request_id"
-        printf 'created_at=%s\n' "$now"
-        printf 'device_id=%s\n' "$device_id"
-        printf 'device_name=%s\n' "$(printf '%s' "$device_name" | tr '\n\r\t=' '    ')"
-        printf 'ip=%s\n' "$remote_ip"
-        printf 'mac=%s\n' "$mac"
-    } > "$tmp"
-    chmod 600 "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$file"
+    # mktemp в той же очереди: до успешной публикации готовый файл не виден.
+    temp_file="$(mktemp "$STATE_DIR/.request.XXXXXX")" || return 1
+    REQUEST_TEMP_FILE="$temp_file"
+    stored_name="$(printf '%s' "$device_name" | tr '\n\r\t=' '    ')" || return 1
+    # Один проверяемый write: не теряем ошибку раннего printf внутри группы.
+    printf 'id=%s\ncreated_at=%s\ndevice_id=%s\ndevice_name=%s\nip=%s\nmac=%s\n' \
+        "$request_id" "$now" "$device_id" "$stored_name" "$remote_ip" "$mac" \
+        > "$REQUEST_TEMP_FILE" || return 1
+    chmod 600 "$REQUEST_TEMP_FILE" 2>/dev/null || return 1
+    mv -f "$REQUEST_TEMP_FILE" "$file" || return 1
+    REQUEST_TEMP_FILE=""
+    # Медленный журнал не удерживает очередь и не передаёт lock потомкам.
+    sheepfold_lock_release
 
     # Просьба уже сохранена: диагностика не отменяет её и не загрязняет JSON.
     log_request "Устройство #${device_id:-?} ${device_name:-$mac} попросило 30 минут доступа в интернет"
@@ -155,21 +238,24 @@ list_requests() {
         return 0
     }
 
-    mkdir -p "$STATE_DIR"
-    cleanup_expired
+    request_lock_queue || return 5
+    now="$(date +%s)" || return 5
+    now="$(request_time "$now")" || return 5
+    cleanup_expired || return 5
     printf '{"app":"sheepfold","ok":true,"requests":['
     first=1
     for file in "$STATE_DIR"/*.request; do
-        [ -f "$file" ] || continue
+        [ -e "$file" ] || [ -L "$file" ] || continue
+        read_request "$file" || return 5
         [ "$first" = 1 ] || printf ','
         first=0
         printf '{"id":"%s","deviceId":"%s","deviceName":"%s","ip":"%s","mac":"%s","createdAt":%s}' \
-            "$(json_escape "$(value_from_file id "$file")")" \
-            "$(json_escape "$(value_from_file device_id "$file")")" \
-            "$(json_escape "$(value_from_file device_name "$file")")" \
-            "$(json_escape "$(value_from_file ip "$file")")" \
-            "$(json_escape "$(value_from_file mac "$file")")" \
-            "$(value_from_file created_at "$file")"
+            "$(json_escape "$REQUEST_ID")" \
+            "$(json_escape "$REQUEST_DEVICE_ID")" \
+            "$(json_escape "$REQUEST_DEVICE_NAME")" \
+            "$(json_escape "$REQUEST_IP")" \
+            "$(json_escape "$REQUEST_MAC")" \
+            "$REQUEST_CREATED_AT"
     done
     printf ']}\n'
 }

@@ -312,7 +312,7 @@ case "$path_info" in
                 2) status="404 Not Found"; error="device_not_registered"; message="Router could not identify this device." ;;
                 3) status="403 Forbidden"; error="access_requests_disabled"; message="No administrator accepts access requests." ;;
                 4) status="403 Forbidden"; error="administrator_device"; message="Administrator devices cannot send child access requests." ;;
-                5) status="503 Service Unavailable"; error="access_request_unavailable"; message="Could not confirm the device ID. Try again later." ;;
+                5) status="503 Service Unavailable"; error="access_request_unavailable"; message="Could not verify the device or access request queue. Try again later." ;;
                 *) status="500 Internal Server Error"; error="request_failed"; message="Could not save access request." ;;
             esac
             header_json "$status"

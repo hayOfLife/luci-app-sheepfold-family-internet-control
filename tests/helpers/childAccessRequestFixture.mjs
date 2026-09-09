@@ -4,6 +4,8 @@
  * Системный sh (Git Bash на Windows) не обходит fault-tools встроенными applet.
  * Отказ подтверждается журналом вызова, все файлы удаляются close(). Не проверяет
  * native UCI, uhttpd, доставку Android-уведомлений или разрешение реального трафика.
+ * Windows использует только последовательную модель flock; настоящая конкуренция
+ * и Unix-права проверяются отдельными Linux-сценариями, без подмены результата.
  */
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -45,7 +47,7 @@ export function createRequestFixture(values = {}) {
   const relocate = (text) => text.replaceAll('/usr/libexec/sheepfold', pathForShell(bin))
     .replaceAll('/tmp/sheepfold', pathForShell(runtime))
     .replaceAll('/tmp/dhcp.leases', pathForShell(leases)).replaceAll('/proc/net/arp', pathForShell(arp));
-  for (const name of ['sheepfold-access-request', 'sheepfold-device-id'])
+  for (const name of ['sheepfold-access-request', 'sheepfold-device-id', 'sheepfold-lock-common'])
     put(name, relocate(readFileSync(join(packageRoot, 'usr/libexec/sheepfold', name), 'utf8')));
   put('test-cgi', relocate(readFileSync(join(packageRoot, 'www/cgi-bin/sheepfold-api'), 'utf8')));
   put('sheepfold-token-common', '# Auth is outside this fixture; the CGI gate still runs.\n');
@@ -73,6 +75,7 @@ set|commit|add_list|delete) printf 'uci %s\\n' "$*" >> "$TEST_REQUEST_ACTIONS" ;
 esac\n`);
   }
   setValues(values);
+  if (process.platform === 'win32') put('flock', '#!/bin/sh\nexit 0\n');
   function run(name, args = [], extra = {}) {
     return spawnSync(process.platform === 'win32' ? 'bash' : 'sh', ['-c',
       'PATH="$1:$PATH"; export PATH; shift; exec "$@"', 'child-request-fixture',

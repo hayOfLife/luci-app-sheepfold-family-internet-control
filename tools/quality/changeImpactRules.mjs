@@ -69,6 +69,7 @@ const routerRuntimeConsumers = Object.freeze([
   'apiFormRuntime.test.mjs',
   'apiRateLimitRuntime.test.mjs',
   'childAccessRequestRuntime.test.mjs',
+  'childRequestQueueRuntime.test.mjs',
   'commandOutcomeRuntime.test.mjs',
   'pairingAttemptRuntime.test.mjs',
   'pairingBoundaryRuntime.test.mjs',
@@ -308,7 +309,7 @@ export const impactRules = Object.freeze([
     categories: ['tooling'],
     checks: ['lintJs'],
     risk: 'medium',
-    directTests: Object.freeze(['childAccessRequestRuntime.test.mjs']),
+    directTests: Object.freeze(['childAccessRequestRuntime.test.mjs', 'childRequestQueueRuntime.test.mjs']),
     review: 'Проверить реальный child-request/CGI и подтверждение вызова fault-tools, без несвязанных продуктовых категорий.',
   }),
   Object.freeze({

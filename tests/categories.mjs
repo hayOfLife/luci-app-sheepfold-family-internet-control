@@ -166,6 +166,7 @@ export const testCategories = Object.freeze({
   ],
   backend: [
     'childAccessRequestRuntime.test.mjs',
+    'childRequestQueueRuntime.test.mjs',
     'pairingAttemptRuntime.test.mjs',
     'commandOutcomeRuntime.test.mjs',
     'tokenStorageRecoveryRuntime.test.mjs',
@@ -323,6 +324,7 @@ export const testCategories = Object.freeze({
   ],
   security: [
     'childAccessRequestRuntime.test.mjs',
+    'childRequestQueueRuntime.test.mjs',
     'backupRecoveryRegression.test.mjs',
     'pairingAttemptRuntime.test.mjs',
     'tokenStorageRecoveryRuntime.test.mjs',
@@ -393,6 +395,7 @@ export const testCategories = Object.freeze({
   ],
   messaging: [
     'childAccessRequestRuntime.test.mjs',
+    'childRequestQueueRuntime.test.mjs',
     'childAccessRequest.test.mjs',
     'childWifiNetworkMonitoring.test.mjs',
     'deviceTempAccessUi.test.mjs',

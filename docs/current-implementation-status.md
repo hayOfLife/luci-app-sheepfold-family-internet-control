@@ -1,5 +1,15 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-09, **r299**, based on `7f77e56` (r298).
+B65–B67 preserve unreadable/malformed request records, serialize cooperating queue
+create/list/prune operations, and check private staging and publication. 148 focused
+tests pass, including 29 new scenarios (25 fail / 4 pass on the unchanged baseline).
+See the [r299 report](audit-fixes-r299.ru.md) and [67-card register](bug-register.ru.md).
+R11 remains open for RAM limits, crash cleanup, monotonic time and UCI/opt-in races.
+Accepted CI/runner policy and D01 are unchanged. No new live/SDK/Android evidence.
+
+Historical continuation:
+
 Focused continuation: 2026-09-09, **r298**, based on accepted `bdb3a92` (r297).
 B61–B64 fix child-request identity scope, ID command outcome, post-save logging,
 parent-list failure status and JSON control-byte encoding. 170 focused tests pass;
