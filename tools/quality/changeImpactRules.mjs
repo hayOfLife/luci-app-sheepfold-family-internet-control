@@ -68,6 +68,7 @@ const routerRuntimeConsumers = Object.freeze([
   'accessPolicyRuntime.test.mjs',
   'adminNotificationRuntime.test.mjs',
   'apiFormRuntime.test.mjs',
+  'legacyLogRuntime.test.mjs',
   'apiRateLimitRuntime.test.mjs',
   'childAccessRequestRuntime.test.mjs',
   'childRequestQueueRuntime.test.mjs',

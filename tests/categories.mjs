@@ -165,6 +165,7 @@ export const testCategories = Object.freeze({
     'siteListResilience.test.mjs',
   ],
   backend: [
+    'legacyLogRuntime.test.mjs',
     'adminNotificationRuntime.test.mjs',
     'childAccessRequestRuntime.test.mjs',
     'childRequestQueueRuntime.test.mjs',
@@ -324,6 +325,7 @@ export const testCategories = Object.freeze({
     'tokenDeviceBinding.test.mjs',
   ],
   security: [
+    'legacyLogRuntime.test.mjs',
     'childAccessRequestRuntime.test.mjs',
     'childRequestQueueRuntime.test.mjs',
     'backupRecoveryRegression.test.mjs',

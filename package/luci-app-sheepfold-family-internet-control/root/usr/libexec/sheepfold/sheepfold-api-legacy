@@ -13,9 +13,19 @@ FORM_COMMON="${SHEEPFOLD_FORM_COMMON:-${0%/*}/sheepfold-lib-form}"
 . "$FORM_COMMON"
 
 json_escape() {
-	# JSON здесь собирается POSIX shell-ом без jq, чтобы endpoint жил даже на лёгких роутерах.
-	# Поэтому обязательно убираем переносы/табы и экранируем кавычки, иначе один лог сломает ответ API.
-	printf '%s' "$1" | tr '\n' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r/ /g; s/\t/ /g'
+	# JSON экранирует control-байты, а не удаляет пользовательский текст.
+	printf '%s\n' "$1" | LC_ALL=C awk '
+		BEGIN { for (c = 1; c < 32; c++) escape[sprintf("%c", c)] = sprintf("\\u%04x", c) }
+		{
+			if (NR > 1) printf "\\n"
+			for (i = 1; i <= length($0); i++) {
+				c = substr($0, i, 1)
+				if (c == "\\") printf "\\\\"
+				else if (c == "\"") printf "\\\""
+				else if (c in escape) printf "%s", escape[c]
+				else printf "%s", c
+			}
+		}'
 }
 
 header_json() {
@@ -175,18 +185,13 @@ mask_private_context() {
 
 # SHEEPFOLD_AI_BEGIN
 program_log_context() {
-	log_file="$(uci -q get sheepfold.global.log_cache_path 2>/dev/null || printf /tmp/sheepfold/events.log)"
-	# Путь к журналу берётся из UCI, но для AI-контекста читаем только ожидаемую область /tmp/sheepfold.
-	# Это не даёт превратить endpoint в произвольное чтение файлов через подменённый log_cache_path.
-	case "$log_file" in
-		/tmp/sheepfold/*) ;;
-		*) log_file="/tmp/sheepfold/events.log" ;;
-	esac
-	if [ ! -r "$log_file" ]; then
+	local context
+	context="$(log_read_masked 80)" || return 1
+	if [ -n "$context" ]; then
+		printf '%s' "$context"
+	else
 		printf '%s' "Журнал Sheepfold недоступен или пуст."
-		return 0
 	fi
-	tail -n 80 "$log_file" 2>/dev/null | mask_private_context
 }
 
 router_info_context() {
@@ -363,79 +368,131 @@ global_block_json() {
 	printf '{"app":"sheepfold","ok":true,"globalBlock":"%s"}\n' "$(json_escape "$action_label")"
 }
 
-# ---------------------------------------------------------------------------
-# log_json — GET /log
-# Возвращает административный журнал. Требует авторизации.
-# ---------------------------------------------------------------------------
-log_json() {
-	auth_check
-	lines="$(form_get lines "$query_string")"
-	case "$lines" in
-		''|*[!0-9]*) lines=100 ;;
-	esac
-	[ "$lines" -le 1000 ] || lines=1000
-
-	log_file="$(uci -q get sheepfold.global.log_cache_path 2>/dev/null || printf /tmp/sheepfold/events.log)"
-	case "$log_file" in
-		/tmp/sheepfold/*) ;;
-		*) log_file="/tmp/sheepfold/events.log" ;;
-	esac
-
-	if [ ! -r "$log_file" ]; then
-		header_json "200 OK"
-		printf '{"app":"sheepfold","ok":true,"entries":[]}\n'
-		return 0
+# Журнал — только обычный файл внутри ожидаемого RAM-каталога. Проверка
+# строкового префикса недостаточна: «..» и symlink могли читать/очищать иной файл.
+# Это не openat/O_NOFOLLOW и не защита от root, подменяющего путь после проверки.
+log_path_checked() {
+	local root rest part current config probe_status
+	root=/tmp/sheepfold
+	if ! log_file="$(uci -q get sheepfold.global.log_cache_path 2>/dev/null)"; then
+		# У UCI один nonzero и для отсутствующего ключа, и для ошибки. Default
+		# допустим только после успешного чтения, подтверждающего отсутствие опции.
+		config="$(uci -q show sheepfold 2>/dev/null)" || return 1
+		probe_status=0
+		printf '%s\n' "$config" | grep -q '^sheepfold\.global\.log_cache_path=' || probe_status=$?
+		[ "$probe_status" = 1 ] || return 1
+		log_file="$root/events.log"
 	fi
-
-	# Собираем строки как JSON-массив строк.
-	# Маскируем MAC и IP — журнал может содержать приватные данные.
-	#
-	# ВАЖНО: while внутри пайпа запускается в subshell — переменная first=0
-	# не видна снаружи и запятая никогда не печаталась бы между элементами.
-	# Решение: читаем файл в переменную через $(...), итерируем уже в основном shell.
-	header_json "200 OK"
-	printf '{"app":"sheepfold","ok":true,"entries":['
-	log_first=1
-	log_lines="$(tail -n "$lines" "$log_file" 2>/dev/null | mask_private_context || true)"
-	printf '%s\n' "$log_lines" | while IFS= read -r line; do
-		[ -n "$line" ] || continue
-		if [ "$log_first" = "1" ]; then
-			log_first=0
-		else
-			printf ','
-		fi
-		printf '"%s"' "$(json_escape "$line")"
+	[ -n "$log_file" ] || log_file="$root/events.log"
+	case "$log_file" in "$root"/*) ;; *) return 1 ;; esac
+	[ ! -L "$root" ] || return 1
+	[ ! -e "$root" ] || [ -d "$root" ] || return 1
+	current="$root"
+	rest="${log_file#"$root"/}"
+	while :; do
+		part="${rest%%/*}"
+		case "$part" in ''|.|..) return 1 ;; esac
+		current="$current/$part"
+		[ ! -L "$current" ] || return 1
+		case "$rest" in
+			*/*)
+				[ -d "$current" ] || return 1
+				rest="${rest#*/}"
+				;;
+			*)
+				[ ! -e "$current" ] || [ -f "$current" ] || return 1
+				return 0
+				;;
+		esac
 	done
-	printf ']}\n'
 }
 
-# ---------------------------------------------------------------------------
-# log_clear_json — POST /log/clear
-# Очищает журнал после подтверждения. Требует авторизации + confirm.
-# ---------------------------------------------------------------------------
+# Каждый caller ниже работает в subshell: FD 9 и переменные lock-helper не
+# вмешиваются в авторизацию/ответ. Тот же inode используют writer и maintenance.
+log_lock_begin() {
+	local common
+	common="${SHEEPFOLD_LOCK_COMMON:-${0%/*}/sheepfold-lock-common}"
+	[ -r "$common" ] || common=/usr/libexec/sheepfold/sheepfold-lock-common
+	[ -r "$common" ] || return 1
+	. "$common"
+	sheepfold_lock_acquire "${SHEEPFOLD_LOG_LOCK:-/tmp/sheepfold/log-maintenance.flock}" 5 || return 1
+	trap 'sheepfold_lock_release' EXIT
+	trap 'exit 1' HUP INT TERM
+}
+
+log_read_masked() (
+	local raw masked
+	# Проверка до lock не даёт создать lock-файл через подменённый RAM-корень.
+	log_path_checked || exit 1
+	log_lock_begin || exit 1
+	log_path_checked || exit 1
+	# Отсутствие первого события допустимо; существующий нечитаемый файл — не пустой журнал.
+	[ -e "$log_file" ] || exit 0
+	[ -f "$log_file" ] && [ -r "$log_file" ] || exit 1
+	raw="$(tail -n "$1" "$log_file" 2>/dev/null)" || exit 1
+	# Проверяем обе стадии отдельно: успешный sed не оправдывает ошибку tail,
+	# а частичный вывод упавшего фильтра нельзя выдать как обезличенный контекст.
+	masked="$(printf '%s' "$raw" | mask_private_context)" || exit 1
+	printf '%s' "$masked"
+)
+
+log_entries_json() {
+	printf '%s\n' "$1" | (
+		local line encoded first
+		first=1
+		printf '['
+		while IFS= read -r line; do
+			[ -n "$line" ] || continue
+			encoded="$(json_escape "$line")" || exit 1
+			if [ "$first" = 1 ]; then first=0; else printf ','; fi
+			printf '"%s"' "$encoded"
+		done
+		printf ']'
+	)
+}
+
+# GET /log: заголовок 200 только после успешного чтения, маскирования и JSON.
+log_json() {
+	auth_check
+	local lines log_lines entries
+	lines="$(form_get lines "$query_string")"
+	case "$lines" in ''|*[!0-9]*) lines=100 ;; esac
+	while [ "${lines#0}" != "$lines" ] && [ "${#lines}" -gt 1 ]; do lines="${lines#0}"; done
+	[ "${#lines}" -le 4 ] && [ "$lines" -le 1000 ] || lines=1000
+	if ! log_lines="$(log_read_masked "$lines")" || ! entries="$(log_entries_json "$log_lines")"; then
+		header_json "503 Service Unavailable"
+		printf '{"app":"sheepfold","ok":false,"error":"log_unavailable"}\n'
+		return 0
+	fi
+	header_json "200 OK"
+	printf '{"app":"sheepfold","ok":true,"entries":%s}\n' "$entries"
+}
+
+log_clear_file() (
+	log_path_checked || exit 1
+	log_lock_begin || exit 1
+	log_path_checked || exit 1
+	# Сначала права, потом разрушительная операция; новый файл сразу закрыт.
+	if [ -e "$log_file" ]; then chmod 600 "$log_file" || exit 1; fi
+	umask 077
+	: > "$log_file"
+)
+
+# POST /log/clear: подтверждение, общая блокировка и отказ без подмены файла.
 log_clear_json() {
 	auth_check
 	read_request_body_checked
 	confirm="$(form_get confirm "$body")"
-
 	if [ "$confirm" != "1" ]; then
 		header_json "403 Forbidden"
 		printf '{"app":"sheepfold","ok":false,"error":"confirmation_required","message":"Send confirm=1 to clear the log."}\n'
 		return 0
 	fi
-
-	log_file="$(uci -q get sheepfold.global.log_cache_path 2>/dev/null || printf /tmp/sheepfold/events.log)"
-	case "$log_file" in
-		/tmp/sheepfold/*) ;;
-		*) log_file="/tmp/sheepfold/events.log" ;;
-	esac
-
-	if ! ( : > "$log_file" ) 2>/dev/null; then
+	if ! log_clear_file 2>/dev/null; then
 		header_json "500 Internal Server Error"
 		printf '{"app":"sheepfold","ok":false,"error":"log_clear_failed"}\n'
 		return 0
 	fi
-
 	header_json "200 OK"
 	printf '{"app":"sheepfold","ok":true,"message":"Log cleared."}\n'
 }
@@ -753,8 +810,13 @@ ai_assistant_json() {
 	fi
 
 	if [ "$include_logs" = "1" ]; then
-		# Журнал нужен ИИ только как материал для спокойного совета родителю.
-		context_text="$context_text\n\n[Журнал программы Sheepfold, последние записи, чувствительные поля скрыты]\n$(program_log_context)"
+		# При отказе контекста не отправляем частичные/непроверенные данные провайдеру.
+		log_context="$(program_log_context)" || {
+			header_json "503 Service Unavailable"
+			printf '{"app":"sheepfold","ok":false,"error":"log_unavailable"}\n'
+			return 0
+		}
+		context_text="$context_text\n\n[Журнал программы Sheepfold, последние записи, чувствительные поля скрыты]\n$log_context"
 	fi
 
 	if [ -n "$google_account" ]; then

@@ -182,6 +182,12 @@
 
 ### Хранение журналов и Yandex Disk
 
+- r301: `/log` и `/log/clear` должны брать общий `log-maintenance.flock`, проверять
+  путь и результат чтения/маскирования до успешного ответа. Ошибка UCI не является
+  разрешением очистить default-файл. `program_log_context` внутри legacy — не
+  текущий публичный AI-handler; не переносить его проверку на другие consumers.
+  См. [контракт журнала](log-events.ru.md), [B72–B75](bug-register.ru.md) и R13.
+
 - Журнал всегда в RAM (`/tmp/sheepfold/events.log`); `log_storage` задаёт **дополнительное** зеркалирование (`ram` / `usb` / `yandex_disk`).
 - Yandex Disk — **WebDAV** + пароль приложения, не OAuth REST; helper: `sheepfold-yandex-disk`, диспетчер: `sheepfold-log-storage`.
 - Debounce выгрузки живых событий: **300 с** (`YANDEX_PUSH_INTERVAL` в `sheepfold-log`).

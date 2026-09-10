@@ -1,5 +1,16 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-10, **r301**, based on `fcd2dc7` (r300).
+B72–B75 fix the existing RAM-log API: read/masking/UCI failures, path boundaries,
+JSON encoding, and coordinated read/clear with the existing writer lock.
+The [75-card register](bug-register.ru.md) and [r301 report](audit-fixes-r301.ru.md)
+record 206 selected tests in 12 files, including 43 new scenarios. R13 keeps
+other log consumers, byte limits, privacy completeness and privileged path races
+explicitly open. Android, workflow and runner production code remain unchanged.
+Local test IPKs are not a new SDK/live-router verification.
+
+Historical continuation:
+
 Focused continuation: 2026-09-10, **r300**, based on `17e4f90` (r299).
 B68–B71 fix the separate persistent administrator-notification queue: verified
 reads, truthful HTTP/JSON, coordinated deduplication/retention, private staging.
