@@ -1,5 +1,15 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-10, **r306**, based on `9f3a38c` (r305).
+B88–B90 distinguish a verified empty Drive search from errors/ambiguity, encode
+query literals and URL parameters separately, and publish/read a checked private
+folder cache. See the [90-card register](bug-register.ru.md) and
+[r306 report](audit-fixes-r306.ru.md). Account-bound folder identity, full pagination,
+quotas, list/download/restore, concurrent writers and live Google remain R14.
+Access policy, Android, workflow and runner code are unchanged.
+
+Historical continuation:
+
 Focused continuation: 2026-09-10, **r305**, based on `4936914` (r304).
 B85–B87 validate OAuth exchange, bind the RAM token cache to observed credentials,
 and publish private cache records after successful preparation. The previous r304

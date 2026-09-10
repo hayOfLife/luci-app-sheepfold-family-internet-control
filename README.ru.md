@@ -122,6 +122,7 @@ uninstall.sh                                         удаление с роу�
 - [Прямое задание для ИИ-разработчика](docs/developer-task.ru.md)
 - [Справочник ошибок и их исправления](docs/troubleshooting.ru.md)
 - [Подробный реестр ошибок и причин решений](docs/bug-register.ru.md)
+- [Аудит r306: точный поиск Drive и кэш папок](docs/audit-fixes-r306.ru.md)
 - [Аудит r305: OAuth и кэш токена](docs/audit-fixes-r305.ru.md)
 - [API между Android-приложением и OpenWRT](docs/android-openwrt-api.ru.md)
 - [ИИ-помощник для родителей](docs/ai-assistant.ru.md)

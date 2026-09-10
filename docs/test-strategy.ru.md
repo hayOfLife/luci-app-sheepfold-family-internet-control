@@ -719,3 +719,25 @@ node scripts/run-test-category.mjs --file googleDriveUploadRuntime.test.mjs --fi
 Файлы `.build/gdrive-fixtures` удаляются после каждого сценария. Настоящие облачные
 аккаунты и секреты не нужны. Полный suite не требуется для этой узкой правки;
 обоснование зависимостей и результаты — в [отчёте r305](audit-fixes-r305.ru.md).
+
+## Точный поиск Google Drive и публикация folder cache: r306
+
+В существующем `googleDriveUploadRuntime.test.mjs` добавлены 42 сценария с префиксом
+`Google Drive lookup`. Настоящий shell проверяется с HTTP/UCI/jshn-двойниками:
+корректный формат JSON, отказ запроса, неоднозначность и неполнота, точный q для
+спецсимволов/UTF-8, создание папок, чтение и публикация кэша. Curl-модель фиксирует
+раскодированное выражение, а не только параметры запуска. Fault должен оставить
+проверяемый след. В файловых assertions сравниваются биты 0777; setgid у родителя
+не выдаётся за расширение прав. Linux-only сценарии не объявляются Windows-pass.
+
+```sh
+node --test --test-name-pattern 'Google Drive lookup' tests/googleDriveUploadRuntime.test.mjs
+```
+
+Прежние 70 upload/OAuth-сценариев также входят в профильный прогон. Прямые соседи:
+`logStorage`, `logWriterRuntime`, `packageHardeningRuntime`, `testIpkPermissions`.
+Карта зависимостей и общие runner не менялись. Baseline задаётся через прежний
+`SHEEPFOLD_GDRIVE_TEST_SOURCE`; результаты 38 fail/4 pass относятся к 42 новым
+сценариям на r305, не к числу отдельных дефектов. Нативный jshn, облачный аккаунт,
+межпроцессный search-then-create и привязка folder cache к аккаунту этим не проверены.
+Полный порядок, причины выбора и ограничения — [отчёт r306](audit-fixes-r306.ru.md).

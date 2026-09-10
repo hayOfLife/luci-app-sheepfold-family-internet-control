@@ -3,6 +3,8 @@
  * с журналом: без сети, аккаунта и реальных секретов. Модель jshn проверяет
  * JSON и get_var/get_type (включая unset под set -u), не заменяя native libubox.
  * В этом файле также проверяются обмен OAuth и привязанный к реквизитам RAM-кэш.
+ * Дополнительно: поиск выбирает только однозначный ID, ошибка не равна отсутствию;
+ * URL и права кэша проверяются по записанному следу, не по grep исходников.
  * Подмена источника повторяет те же assertions на предыдущей версии.
  */
 import assert from 'node:assert/strict';
@@ -66,6 +68,17 @@ def arg(k,d=''):
  return args[args.index(k)+1] if k in args else d
 url=next((a for a in args if a.startswith('https://')), '')
 method=arg('-X','GET'); body=''; http='200'; exitcode=0
+query=urllib.parse.parse_qs(urllib.parse.urlsplit(url).query,keep_blank_values=True)
+if '-G' in args or '--get' in args:
+ for i,option in enumerate(args):
+  if option=='--data-urlencode':
+   value=args[i+1]
+   if '=' in value: key,value=value.split('=',1)
+   else: key,filename=value.split('@',1); value=pathlib.Path(filename).read_text()
+   query.setdefault(key,[]).append(value)
+ url=urllib.parse.urlunsplit(urllib.parse.urlsplit(url)._replace(query=urllib.parse.urlencode(query,doseq=True)))
+fields=query.get('fields',[''])[0]
+search=query.get('q',[''])[0]
 kind='other'
 if 'oauth2' in url:
  kind='token'; body=opts.get('tokenBody','{"access_token":"synthetic-token","expires_in":3600,"token_type":"Bearer"}'); http=str(opts.get('tokenHttp',200)); exitcode=opts.get('tokenExit',0)
@@ -76,13 +89,16 @@ elif '/upload/' in url:
 elif '/files/file1' in url:
  kind='metadata'; http=str(opts.get('metadataHttp',200)); exitcode=opts.get('metadataExit',0)
  body=opts.get('metadataBody',json.dumps({'id':opts.get('metadataId','file1'),'size':str(opts['remoteSize'])},indent=2))
-elif 'fields=files(size)' in url: body='{"files":[]}'
-elif 'fields=files(id,name,size,modifiedTime)' in url:
- kind='lookup'; body='{"files":[]}' if opts.get('newFile') else '{"files":[{"id":"file1","name":"synthetic.tar","size":"25"}]}'
-elif 'fields=files(id,name)' in url:
- body='{"files":[{"id":"folder1","name":"folder"}]}'
+elif fields=='files(size)': body='{"files":[]}'
+elif search.startswith("name="):
+ folder="mimeType='application/vnd.google-apps.folder'" in search
+ kind='folderLookup' if folder else 'lookup'
+ default='{"files":[]}' if opts.get('emptyFolders' if folder else 'newFile') else ('{"files":[{"id":"folder1","name":"folder"}]}' if folder else '{"files":[{"id":"file1","name":"synthetic.tar","size":"25"}]}')
+ body=opts.get(kind+'Body',default); http=str(opts.get(kind+'Http',200)); exitcode=opts.get(kind+'Exit',0)
+elif method=='POST' and '/drive/v3/files' in url:
+ kind='folderCreate'; body=opts.get('folderCreateBody','{"id":"folder1"}'); http=str(opts.get('folderCreateHttp',200)); exitcode=opts.get('folderCreateExit',0)
 else: body='{"id":"folder1"}'
-event={'kind':kind,'method':method,'url':url,'http':http,'exit':exitcode,'auth':arg('-H')}
+event={'kind':kind,'method':method,'url':url,'http':http,'exit':exitcode,'auth':arg('-H'),'query':query}
 if kind=='token':
  parts=[]
  for i,option in enumerate(args):
@@ -99,8 +115,8 @@ if kind=='token':
   opts['credentials']['refresh_token']='changed-during-request'
   pathlib.Path(os.environ['GDRIVE_OPTIONS']).write_text(json.dumps(opts))
 
-if kind=='upload':
- data=arg('--data-binary')
+if kind in ('upload','folderCreate'):
+ data=arg('--data-binary',arg('-d'))
  if data.startswith('@'):
   p=pathlib.Path(data[1:]); event['bytes']=p.read_bytes().hex(); event['mode']=stat.S_IMODE(p.stat().st_mode); event['parentMode']=stat.S_IMODE(p.parent.stat().st_mode)
 if kind=='metadata' and opts.get('removeJshnAtMetadata'): pathlib.Path(opts['jshnFile']).unlink()
@@ -118,16 +134,23 @@ sys.exit(exitcode)
 try:
  if len(sys.argv)>1 and sys.argv[1]=='script':
   obj=json.loads(sys.argv[3]); assert isinstance(obj,dict); print('jsonData='+shlex.quote(sys.argv[3])); sys.exit(0)
- obj=json.loads(sys.stdin.read()); assert isinstance(obj,dict)
+ obj=json.loads(sys.stdin.read()); assert isinstance(obj,(dict,list))
  if len(sys.argv)==1: sys.exit(0)
- v=obj[sys.argv[2]]
+ if sys.argv[1]=='keys':
+  print(shlex.quote(' '.join(str(i+1) for i in range(len(obj))) if isinstance(obj,list) else ' '.join(obj.keys()))); sys.exit(0)
+ v=obj[int(sys.argv[2])-1] if isinstance(obj,list) else obj[sys.argv[2]]
+ if sys.argv[1]=='select':
+  assert isinstance(v,(dict,list)); print(shlex.quote(json.dumps(v))); sys.exit(0)
  if sys.argv[1]=='type': print('string' if isinstance(v,str) else 'boolean' if isinstance(v,bool) else 'int' if isinstance(v,int) else 'object' if isinstance(v,dict) else 'array' if isinstance(v,list) else 'null')
  else:
-  assert isinstance(v,(str,int)) and not isinstance(v,bool); print(shlex.quote(str(v)))
-except (ValueError,KeyError,AssertionError,TypeError): sys.exit(1)
+  assert isinstance(v,(str,int)); print(shlex.quote(str(int(v)) if isinstance(v,bool) else str(v)))
+except (ValueError,KeyError,IndexError,AssertionError,TypeError): sys.exit(1)
 `);
   put('jshn', `#!/bin/sh\nexec python3 -S ${q(path(join(bin,'jsonModel.py')))} script "$@"\n`);
   put('jshn.sh', `json_init() { jsonData='{}'; }\njson_load() { jsonData="$1"; printf '%s' "$jsonData" | python3 -S ${q(path(join(bin, 'jsonModel.py')))}; }\njson_get_var() { local jsonValue; jsonValue="$(printf '%s' "$jsonData" | python3 -S ${q(path(join(bin, 'jsonModel.py')))} value "$2")" || return 1; eval "$1=$jsonValue"; }\njson_get_type() { local jsonType; jsonType="$(printf '%s' "$jsonData" | python3 -S ${q(path(join(bin, 'jsonModel.py')))} type "$2")" || { unset nativeMissingType; eval "$1=\${nativeMissingType}"; return 1; }; eval "$1=$jsonType"; }\n`);
+  put('jshn.sh',readFileSync(join(bin,'jshn.sh'),'utf8') +
+    `json_select() { local jsonValue; jsonValue="$(printf '%s' "$jsonData" | python3 -S ${q(path(join(bin, 'jsonModel.py')))} select "$1")" || return 1; eval "jsonData=$jsonValue"; }\n` +
+    `json_get_keys() { local jsonValue; jsonValue="$(printf '%s' "$jsonData" | python3 -S ${q(path(join(bin, 'jsonModel.py')))} keys)" || return 1; eval "$1=$jsonValue"; }\n`);
   const run = (command = 'archive-push', args = []) => spawnSync(process.platform === 'win32' ? 'bash' : 'sh',
     ['-c', 'PATH="$1:$PATH"; export PATH; shift; exec sh "$@"', 'gdrive-fixture', path(bin), path(join(bin, 'sheepfold-google-drive')), command, ...args],
     { cwd: repo, env: { ...process.env, GDRIVE_OPTIONS: path(settings), GDRIVE_TRACE: path(traceFile) }, encoding: 'utf8', timeout: 20000 });
@@ -139,7 +162,13 @@ except (ValueError,KeyError,AssertionError,TypeError): sys.exit(1)
     assert.ok(real);
     put(name, `#!/bin/sh\nif ${predicate}; then printf '{"kind":"${name}-fault"}\\n' >> ${q(path(traceFile))}; ${body}; fi\nexec ${q(real)} "$@"\n`);
   };
-  return { root, bin, ram, archive, path, put, run, fault, cacheFile, authKey, creds,
+  const call = (name,args=[]) => {
+    const main=readFileSync(join(bin,'sheepfold-google-drive'),'utf8');
+    put('function-run',main.slice(0,main.indexOf('command_name="${1:-}"'))+'\n"$@"\n');
+    return spawnSync('sh',[path(join(bin,'function-run')),name,...args],{cwd:repo,
+      env:{...process.env,PATH:`${bin}:${process.env.PATH}`,GDRIVE_OPTIONS:path(settings),GDRIVE_TRACE:path(traceFile)},encoding:'utf8',timeout:20000});
+  };
+  return { root, bin, ram, archive, path, put, run, call, fault, cacheFile, authKey, creds,
     update: (changes) => writeFileSync(settings, JSON.stringify({...JSON.parse(readFileSync(settings,'utf8')), ...changes})), trace: () => readFileSync(traceFile,'utf8').trim().split('\n').filter(Boolean).map((s) => JSON.parse(s)),
     leftovers: () => readdirSync(ram).filter((s) => /^\.gdrive-(?:upload|multipart|create-response)/.test(s)) };
 }
@@ -396,5 +425,138 @@ describe('Google Drive OAuth exchange and cache', () => {
   });
   it('does not reuse an expired cache', (t)=>{
     const f=fixture(t,{now:1800003600}); succeeded(f.run('test')); assert.ok(refreshes(f).length);
+  });
+});
+
+// r306: настоящий caller + записанный HTTP. Ошибка поиска должна остановить
+// создание/перезапись, а не только поменять текст возвращаемого сообщения.
+describe('Google Drive lookup and folder publication',()=>{
+  const noMutation = (f) => assert.ok(!f.trace().some((v)=>v.kind==='upload'||v.kind==='folderCreate'),'lookup failure caused remote mutation');
+  it('updates the existing file from a normally formatted JSON response', (t)=>{
+    const f=fixture(t,{folderLookupBody:'{ "files": [ { "id": "folder1" } ] }',lookupBody:JSON.stringify({files:[{id:'file1',name:'synthetic.tar'}]},null,2)});
+    succeeded(f.run()); assert.equal(existsSync(f.archive),false);
+    assert.ok(!f.trace().some((v)=>v.kind==='folderCreate'));
+    assert.equal(f.trace().find((v)=>v.kind==='upload').method,'PATCH');
+  });
+  for(const stage of ['folderLookup','lookup']) for(const opts of [{Http:500},{Http:403},{Exit:7}]) {
+    it(`does not mutate after ${stage} ${JSON.stringify(opts)}`, (t)=>{
+      const options=Object.fromEntries(Object.entries(opts).map(([key,value])=>[stage+key,value]));
+      const f=fixture(t,options); failed(f.run()); assert.ok(f.trace().some((v)=>v.kind===stage));
+      noMutation(f); assert.ok(existsSync(f.archive));
+    });
+  }
+  for(const body of ['{broken','{}','{"files":{}}','{"files":[{"id":33}]}','{"files":[{"id":"bad/id"}]}',
+    '{"files":[],"error":{"code":500}}','{"files":[],"nextPageToken":"more"}',
+    '{"files":[{"id":"file1"}],"nextPageToken":"more"}',
+    '{"files":[{"id":"file1"}],"incompleteSearch":true}',
+    '{"files":[{"id":"file1"}],"incompleteSearch":"false"}',
+    '{"files":[{"id":"file1"},{"id":"file2"}]}']) {
+    it(`rejects an untrustworthy or ambiguous lookup ${body}`, (t)=>{
+      const f=fixture(t,{lookupBody:body}); failed(f.run());
+      assert.ok(f.trace().some((v)=>v.kind==='lookup')); noMutation(f); assert.ok(existsSync(f.archive));
+    });
+  }
+  it('accepts exactly one result with explicit complete-search markers', (t)=>{
+    const f=fixture(t,{lookupBody:'{"files":[{"id":"file1"}],"incompleteSearch":false,"nextPageToken":""}'});
+    succeeded(f.run()); assert.equal(f.trace().find((v)=>v.kind==='upload').method,'PATCH');
+  });
+  it('creates only after a verified complete empty search', (t)=>{
+    const f=fixture(t,{newFile:true}); succeeded(f.run());
+    assert.equal(f.trace().find((v)=>v.kind==='upload').method,'POST');
+  });
+  it('does not choose an unrelated nested id from the lookup body', (t)=>{
+    const f=fixture(t,{lookupBody:'{"files":[{"id":"file1","extra":{"id":"file2"}}]}'});
+    succeeded(f.run()); assert.match(f.trace().find((v)=>v.kind==='upload').url,/\/files\/file1\?/);
+  });
+  it('escapes query literals separately from URL encoding', (t)=>{
+    const rootName="Семья O'Reilly\\Backup & 100%+#";
+    const f=fixture(t,{credentials:{root_folder:`/${rootName}`}}); succeeded(f.run());
+    const request=f.trace().find((v)=>v.kind==='folderLookup');
+    const escaped=rootName.replaceAll('\\','\\\\').replaceAll("'","\\'");
+    assert.deepEqual(request.query.q,[`name='${escaped}' and mimeType='application/vnd.google-apps.folder' and 'root' in parents and trashed=false`]);
+    assert.ok(!Object.keys(request.query).some((key)=>key.includes('100')));
+  });
+  it('preserves special archive names in the exact file search', (t)=>{
+    const f=fixture(t); const name="O'Reilly\\100%+&#.tar"; const archive=join(f.ram,'.private','archive',name); renameSync(f.archive,archive);
+    succeeded(f.run()); const request=f.trace().find((v)=>v.kind==='lookup');
+    const escaped=name.replaceAll('\\','\\\\').replaceAll("'","\\'");
+    assert.deepEqual(request.query.q,[`name='${escaped}' and mimeType!='application/vnd.google-apps.folder' and 'folder1' in parents and trashed=false`]);
+    assert.equal(existsSync(archive),false);
+  });
+  for(const options of [{folderCreateHttp:500},{folderCreateExit:7},{folderCreateBody:'{"id":"bad/id"}'},{folderCreateBody:'{"id":"folder1"'}]) {
+    it(`does not accept failed folder creation ${JSON.stringify(options)}`, (t)=>{
+      const f=fixture(t,{emptyFolders:true,...options}); failed(f.run());
+      assert.ok(f.trace().some((v)=>v.kind==='folderCreate'));
+      assert.ok(!f.trace().some((v)=>v.kind==='upload')); assert.ok(existsSync(f.archive));
+    });
+  }
+  // Родитель .build может наследовать setgid; проверяем именно права доступа,
+  // как в существующем upload-тесте, не принимая harmless 2700 за открытый 0755.
+  it('accepts a formatted creation response and uses a private request file', {skip:!native},(t)=>{
+    const f=fixture(t,{emptyFolders:true,folderCreateBody:'{ "id": "folder1" }'}); succeeded(f.run());
+    const event=f.trace().find((v)=>v.kind==='folderCreate'); assert.equal(event.mode&0o777,0o600); assert.equal(event.parentMode&0o777,0o700);
+    assert.equal(JSON.parse(Buffer.from(event.bytes,'hex').toString()).mimeType,'application/vnd.google-apps.folder');
+    assert.equal(statSync(join(f.ram,'.gdrive-folders.json')).mode&0o777,0o600);
+  });
+  for(const command of ['chmod','mv']) it(`preserves the old folder cache after failed ${command}`, (t)=>{
+    const f=fixture(t); const cache=join(f.ram,'.gdrive-folders.json'), old='{"root":"old","logs":"oldLogs","backups":"oldBackups","root_name":"old"}\n'; writeFileSync(cache,old);
+    f.fault(command,'case "${2:-}" in */folders|*/.gdrive-folders.json) true;; *) false;; esac','exit 7');
+    failed(f.run()); assert.ok(f.trace().some((v)=>v.kind===`${command}-fault`));
+    assert.equal(readFileSync(cache,'utf8'),old); assert.ok(existsSync(f.archive));
+    assert.ok(!f.trace().some((v)=>v.kind==='upload')); assert.deepEqual(f.leftovers(),[]);
+  });
+  it('does not overwrite a symlink target used as the folder cache', {skip:!native},(t)=>{
+    const f=fixture(t); const other=join(f.root,'other'); writeFileSync(other,'untouched'); symlinkSync(other,join(f.ram,'.gdrive-folders.json'));
+    failed(f.run()); assert.equal(readFileSync(other,'utf8'),'untouched'); assert.ok(existsSync(f.archive));
+    assert.ok(!f.trace().some((v)=>v.kind==='upload'));
+  });
+  it('rejects a directory in place of the folder cache', (t)=>{
+    const f=fixture(t); mkdirSync(join(f.ram,'.gdrive-folders.json'));
+    failed(f.run()); assert.ok(existsSync(f.archive)); assert.ok(!f.trace().some((v)=>v.kind==='upload'));
+  });
+  it('fails a cache read instead of returning a partial id', (t)=>{
+    const f=fixture(t); const cache=join(f.ram,'.gdrive-folders.json'); writeFileSync(cache,'{"logs":"folder1"}');
+    f.fault('cat','case "${1:-}" in */.gdrive-folders.json) true;; *) false;; esac',`printf '{"logs":"folder1"}'; exit 7`);
+    failed(f.call('folder_id_from_cache',['logs'])); assert.ok(f.trace().some((v)=>v.kind==='cat-fault')); assert.deepEqual(f.trace().filter((v)=>v.kind==='upload'),[]);
+  });
+});
+
+describe('Google Drive lookup supplemental boundaries',()=>{
+  for(const folderLookupBody of ['{"files":[{"id":"root1"},{"id":"root2"}]}','{"files":[],"nextPageToken":"more"}']) {
+    it(`does not create folders after incomplete or ambiguous search ${folderLookupBody}`, (t)=>{
+      const f=fixture(t,{folderLookupBody}); failed(f.run());
+      assert.ok(f.trace().some((v)=>v.kind==='folderLookup'));
+      assert.ok(!f.trace().some((v)=>v.kind==='folderCreate'||v.kind==='upload')); assert.ok(existsSync(f.archive));
+    });
+  }
+  it('rejects a failed search-body read even when it prints an empty list', (t)=>{
+    const f=fixture(t); f.fault('cat','case "${1:-}" in */search) true;; *) false;; esac',`printf '{"files":[]}'; exit 7`);
+    failed(f.run()); assert.ok(f.trace().some((v)=>v.kind==='cat-fault'));
+    assert.ok(!f.trace().some((v)=>v.kind==='folderCreate'||v.kind==='upload')); assert.ok(existsSync(f.archive));
+  });
+  it('does not choose the default folder after a configured root read fails', (t)=>{
+    const f=fixture(t,{credentials:{root_folder:'/Chosen'}});
+    f.fault('uci','[ "${2:-}" = get ] && [ "${3:-}" = sheepfold.gdrive.root_folder ]','exit 7');
+    failed(f.run()); assert.ok(f.trace().some((v)=>v.kind==='uci-fault'));
+    assert.ok(!f.trace().some((v)=>v.kind==='folderLookup'||v.kind==='folderCreate'||v.kind==='upload')); assert.ok(existsSync(f.archive));
+  });
+  it('keeps the default root when UCI confirms that the option is absent', (t)=>{
+    const f=fixture(t,{credentials:{root_folder:null}}); succeeded(f.run());
+    assert.ok(f.trace().find((v)=>v.kind==='folderLookup').query.q[0].startsWith("name='sheepfold'"));
+  });
+  it('reads a formatted complete folder cache without doing HTTP', (t)=>{
+    const f=fixture(t); writeFileSync(join(f.ram,'.gdrive-folders.json'),JSON.stringify({root:'root1',logs:'logs1',backups:'backups1',root_name:'sheepfold'},null,2));
+    const r=f.call('folder_id_from_cache',['logs']); succeeded(r); assert.equal(r.stdout,'logs1'); assert.deepEqual(f.trace(),[]);
+  });
+  for(const cache of ['{"root":"root1","logs":"logs1","backups":"backups1","root_name":"sheepfold"',
+    '{"root":33,"logs":"logs1","backups":"backups1","root_name":"sheepfold"}']) {
+    it(`rejects an invalid full cache record ${cache}`, (t)=>{
+      const f=fixture(t); writeFileSync(join(f.ram,'.gdrive-folders.json'),cache); const r=f.call('folder_id_from_cache',['logs']); failed(r);
+      assert.equal(r.stdout,''); assert.deepEqual(f.trace(),[]);
+    });
+  }
+  it('does not treat an oversized search response as permission to create', (t)=>{
+    const f=fixture(t,{lookupBody:JSON.stringify({files:[],padding:'x'.repeat(65536)})}); failed(f.run());
+    assert.ok(f.trace().some((v)=>v.kind==='lookup')); assert.ok(!f.trace().some((v)=>v.kind==='upload')); assert.ok(existsSync(f.archive));
   });
 });

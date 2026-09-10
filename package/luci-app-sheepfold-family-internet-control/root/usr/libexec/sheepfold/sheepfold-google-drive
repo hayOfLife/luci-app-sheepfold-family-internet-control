@@ -38,8 +38,17 @@ credentials_ready() {
 }
 
 normalize_root_folder() {
-	local folder
-	folder="$(uci_get root_folder '/sheepfold')"
+	local folder snapshot current
+	# Недоступная настройка не разрешает выбрать другую папку по умолчанию.
+	snapshot="$(uci -q show sheepfold.gdrive)" || return 1
+	if ! folder="$(uci -q get sheepfold.gdrive.root_folder)"; then
+		case "
+$snapshot" in *'
+sheepfold.gdrive.root_folder='*) return 1 ;; esac
+		folder='/sheepfold'
+	fi
+	current="$(uci -q show sheepfold.gdrive)" || return 1
+	[ "$current" = "$snapshot" ] || return 1
 	folder="${folder#/}"
 	folder="${folder%/}"
 	[ -n "$folder" ] || folder="sheepfold"
@@ -395,67 +404,186 @@ drive_create_file() (
 	drive_metadata_values "$response"
 )
 
-find_folder_id() {
-	local parent_id name query response folder_id
-	parent_id="$1"
-	name="$2"
-
-	query="$(printf "name='%s' and mimeType='application/vnd.google-apps.folder' and '%s' in parents and trashed=false" \
-		"$(printf '%s' "$name" | sed "s/'/\\\\'/g")" "$parent_id")"
-	response="$(drive_request GET "$DRIVE_API/files?q=$(printf '%s' "$query" | sed 's/ /%20/g;s/'\''/%27/g')&fields=files(id,name)&pageSize=1" 2>/dev/null || true)"
-	folder_id="$(printf '%s' "$response" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1)"
-	[ -n "$folder_id" ] || return 1
-	printf '%s' "$folder_id"
+# Поиск имеет три исхода: 0 — один проверенный ID; 4 — доказанно пустой
+# полный ответ; 1 — отказ/неоднозначность. Только 4 разрешает новое создание.
+drive_id_valid() {
+	[ "${#1}" -le 256 ] || return 1
+	case "$1" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
 }
 
-create_folder_id() {
-	local parent_id name token response folder_id code
+drive_query_literal() {
+	local plain
+	[ -n "$1" ] && [ "${#1}" -le 1024 ] || return 1
+	plain="$(printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]')" || return 1
+	[ "$plain" = "$1" ] || return 1
+	# Сначала экранирование языка Drive (\ и '), затем curl кодирует URL.
+	# Подмена только пробелов не защищает &, +, %, # и обратную косую черту.
+	printf '%s' "$1" | LC_ALL=C awk '
+		{ for (i=1;i<=length($0);i++) {
+			c=substr($0,i,1)
+			if(c=="\\") printf "\\\\"
+			else if(c=="\047") printf "\\\047"
+			else printf "%s",c
+		} }
+	'
+}
+
+drive_search_id() (
+	set +u
+	set -f
+	[ -r /usr/share/libubox/jshn.sh ] || exit 1
+	. /usr/share/libubox/jshn.sh
+	json_init
+	drive_json_load "$1" || exit 1
+	if json_get_type value_type error; then exit 1; fi
+	if json_get_type value_type incompleteSearch; then
+		[ "$value_type" = boolean ] || exit 1
+		json_get_var incomplete incompleteSearch || exit 1
+		[ "$incomplete" = 0 ] || exit 1
+	fi
+	if json_get_type value_type nextPageToken; then
+		[ "$value_type" = string ] || exit 1
+		json_get_var page_token nextPageToken || exit 1
+		[ -z "$page_token" ] || exit 1
+	fi
+	json_get_type value_type files || exit 1
+	[ "$value_type" = array ] || exit 1
+	json_select files || exit 1
+	json_get_keys indexes || exit 1
+	# jshn возвращает только собственные числовые индексы массива.
+	set -- $indexes
+	[ "$#" -gt 0 ] || exit 4
+	# Два совпадения/следующая страница не дают права выбрать произвольное.
+	[ "$#" = 1 ] || exit 1
+	json_get_type value_type "$1" || exit 1
+	[ "$value_type" = object ] || exit 1
+	json_select "$1" || exit 1
+	json_get_type value_type id || exit 1
+	[ "$value_type" = string ] || exit 1
+	json_get_var file_id id || exit 1
+	drive_id_valid "$file_id" || exit 1
+	printf '%s' "$file_id"
+)
+
+drive_find_id() (
 	parent_id="$1"
 	name="$2"
-
-	token="$(access_token)" || return 1
-	response="$(curl -sS -m 60 -X POST \
+	kind="$3"
+	drive_id_valid "$parent_id" || exit 1
+	literal="$(drive_query_literal "$name")" || exit 1
+	case "$kind" in
+		folder) mime_test="mimeType='application/vnd.google-apps.folder'" ;;
+		file) mime_test="mimeType!='application/vnd.google-apps.folder'" ;;
+		*) exit 1 ;;
+	esac
+	work="$(drive_workdir)" || exit 1
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	umask 077
+	printf "name='%s' and %s and '%s' in parents and trashed=false" \
+		"$literal" "$mime_test" "$parent_id" >"$work/query" || exit 1
+	token="$(access_token)" || exit 1
+	code="$(curl -sS -m 60 --get -o "$work/search" -w '%{http_code}' \
 		-H "Authorization: Bearer $token" \
-		-H "Content-Type: application/json" \
-		-d "{\"name\":\"$(json_escape "$name")\",\"mimeType\":\"application/vnd.google-apps.folder\",\"parents\":[\"$parent_id\"]}" \
-		"$DRIVE_API/files?fields=id" 2>/dev/null || true)"
-	folder_id="$(json_get_string id "$response")"
-	[ -n "$folder_id" ] || return 1
-	printf '%s' "$folder_id"
+		--data-urlencode "q@$work/query" \
+		--data-urlencode 'fields=files(id),nextPageToken,incompleteSearch' \
+		--data-urlencode 'pageSize=2' "$DRIVE_API/files")" || exit 1
+	[ "$code" = 200 ] || exit 1
+	bytes="$(drive_local_bytes "$work/search")" || exit 1
+	[ "${#bytes}" -le 5 ] && [ "$bytes" -le 65536 ] || exit 1
+	response="$(cat "$work/search")" || exit 1
+	drive_search_id "$response"
+)
+
+find_folder_id() {
+	drive_find_id "$1" "$2" folder
 }
+
+create_folder_id() (
+	parent_id="$1"
+	name="$2"
+	drive_id_valid "$parent_id" || exit 1
+	drive_query_literal "$name" >/dev/null || exit 1
+	work="$(drive_workdir)" || exit 1
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	umask 077
+	name_json="$(json_escape "$name")" || exit 1
+	printf '{"name":"%s","mimeType":"application/vnd.google-apps.folder","parents":["%s"]}' \
+		"$name_json" "$parent_id" >"$work/folder-metadata" || exit 1
+	chmod 600 "$work/folder-metadata" || exit 1
+	token="$(access_token)" || exit 1
+	code="$(curl -sS -m 60 -X POST -o "$work/response" -w '%{http_code}' \
+		-H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+		--data-binary "@$work/folder-metadata" "$DRIVE_API/files?fields=id")" || exit 1
+	case "$code" in 200|201) ;; *) exit 1 ;; esac
+	response="$(cat "$work/response")" || exit 1
+	drive_metadata_values "$response"
+)
 
 ensure_folder_id() {
-	local parent_id name folder_id
+	local parent_id name folder_id result
 	parent_id="$1"
 	name="$2"
-
-	folder_id="$(find_folder_id "$parent_id" "$name" 2>/dev/null || true)"
-	if [ -n "$folder_id" ]; then
+	if folder_id="$(find_folder_id "$parent_id" "$name")"; then
 		printf '%s' "$folder_id"
 		return 0
+	else
+		result=$?
+		[ "$result" = 4 ] || return 1
 	fi
 	create_folder_id "$parent_id" "$name"
 }
 
-cache_folder_ids() {
-	local root_name root_id logs_id backups_id
-
-	root_name="$(normalize_root_folder)"
-	root_id="$(ensure_folder_id root "$root_name")" || return 1
-	logs_id="$(ensure_folder_id "$root_id" logs)" || return 1
-	backups_id="$(ensure_folder_id "$root_id" backups)" || return 1
-
-	mkdir -p /tmp/sheepfold 2>/dev/null || true
+cache_folder_ids() (
+	# Старый кэш остаётся до полной подготовки нового. Ссылки и каталоги
+	# по имени кэша не должны перенаправлять запись в другой объект.
+	[ ! -L "$FOLDER_CACHE" ] || exit 1
+	[ ! -e "$FOLDER_CACHE" ] || [ -f "$FOLDER_CACHE" ] || exit 1
+	work="$(drive_workdir)" || exit 1
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	umask 077
+	root_name="$(normalize_root_folder)" || exit 1
+	root_id="$(ensure_folder_id root "$root_name")" || exit 1
+	logs_id="$(ensure_folder_id "$root_id" logs)" || exit 1
+	backups_id="$(ensure_folder_id "$root_id" backups)" || exit 1
+	name_json="$(json_escape "$root_name")" || exit 1
 	printf '{"root":"%s","logs":"%s","backups":"%s","root_name":"%s"}\n' \
-		"$root_id" "$logs_id" "$backups_id" "$(json_escape "$root_name")" >"$FOLDER_CACHE"
-	chmod 600 "$FOLDER_CACHE" 2>/dev/null || true
-}
+		"$root_id" "$logs_id" "$backups_id" "$name_json" >"$work/folders" || exit 1
+	chmod 600 "$work/folders" || exit 1
+	[ ! -L "$FOLDER_CACHE" ] || exit 1
+	[ ! -e "$FOLDER_CACHE" ] || [ -f "$FOLDER_CACHE" ] || exit 1
+	mv "$work/folders" "$FOLDER_CACHE" || exit 1
+)
+
+drive_cached_folder() (
+	set +u
+	[ -r /usr/share/libubox/jshn.sh ] || exit 1
+	. /usr/share/libubox/jshn.sh
+	json_init
+	drive_json_load "$1" || exit 1
+	for key in root logs backups; do
+		json_get_type value_type "$key" || exit 1
+		[ "$value_type" = string ] || exit 1
+		json_get_var folder_id "$key" || exit 1
+		drive_id_valid "$folder_id" || exit 1
+	done
+	json_get_type value_type root_name || exit 1
+	[ "$value_type" = string ] || exit 1
+	json_get_var folder_id "$2" || exit 1
+	printf '%s' "$folder_id"
+)
 
 folder_id_from_cache() {
-	local key
+	local key response
 	key="$1"
-	[ -r "$FOLDER_CACHE" ] || cache_folder_ids || return 1
-	json_get_string "$key" "$(cat "$FOLDER_CACHE" 2>/dev/null || true)"
+	case "$key" in root|logs|backups) ;; *) return 1 ;; esac
+	[ ! -L "$FOLDER_CACHE" ] || return 1
+	if [ ! -e "$FOLDER_CACHE" ]; then cache_folder_ids || return 1; fi
+	[ ! -L "$FOLDER_CACHE" ] && [ -f "$FOLDER_CACHE" ] || return 1
+	response="$(cat "$FOLDER_CACHE")" || return 1
+	drive_cached_folder "$response" "$key"
 }
 
 remote_name_allowed() {
@@ -478,16 +606,7 @@ resolve_remote_name() {
 }
 
 find_file_in_folder() {
-	local folder_id name query response file_id
-	folder_id="$1"
-	name="$2"
-
-	query="$(printf "name='%s' and '%s' in parents and trashed=false" \
-		"$(printf '%s' "$name" | sed "s/'/\\\\'/g")" "$folder_id")"
-	response="$(drive_request GET "$DRIVE_API/files?q=$(printf '%s' "$query" | sed 's/ /%20/g;s/'\''/%27/g')&fields=files(id,name,size,modifiedTime)&pageSize=1" 2>/dev/null || true)"
-	file_id="$(printf '%s' "$response" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1)"
-	[ -n "$file_id" ] || return 1
-	printf '%s' "$file_id"
+	drive_find_id "$1" "$2" file
 }
 
 folder_list_json_array() {
@@ -603,15 +722,16 @@ verify_upload() {
 }
 
 upload_file_to_folder() {
-	local folder_id local_path filename file_id
+	local folder_id local_path filename file_id result
 	folder_id="$1"
 	local_path="$2"
 	filename="$3"
-	file_id="$(find_file_in_folder "$folder_id" "$filename" 2>/dev/null || true)"
-	if [ -n "$file_id" ]; then
+	if file_id="$(find_file_in_folder "$folder_id" "$filename")"; then
 		case "$file_id" in *[!A-Za-z0-9_-]*) return 1 ;; esac
 		drive_upload_media "$file_id" "$local_path" >/dev/null || return 1
 	else
+		result=$?
+		[ "$result" = 4 ] || return 1
 		file_id="$(drive_create_file "$folder_id" "$local_path" "$filename")" || return 1
 	fi
 	# Только отдельный ответ о конкретном Drive ID является удалённым размером.

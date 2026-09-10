@@ -118,6 +118,7 @@ See:
 
 - [Current implementation status](docs/current-implementation-status.md)
 - [Detailed defect register and decision rationale](docs/bug-register.ru.md)
+- [r306 exact Drive lookup and folder-cache audit](docs/audit-fixes-r306.ru.md)
 - [r305 OAuth and token-cache audit report](docs/audit-fixes-r305.ru.md)
 - [Current development roadmap (Russian)](docs/project-development-roadmap.ru.md)
 - [Product requirements](docs/product-requirements.md)
