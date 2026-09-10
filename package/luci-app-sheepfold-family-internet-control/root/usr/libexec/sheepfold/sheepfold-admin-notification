@@ -1,126 +1,248 @@
 #!/bin/sh
+# Постоянная очередь общих уведомлений. Не удаляем запись при отказе чтения,
+# а публикацию, поиск дубля и уборку согласуем одним lock. Telegram — best effort.
 set -eu
+umask 077
 
 HASH_COMMON="${SHEEPFOLD_HASH_COMMON:-${0%/*}/sheepfold-hash-common}"
 [ -r "$HASH_COMMON" ] || HASH_COMMON=/usr/libexec/sheepfold/sheepfold-hash-common
 . "$HASH_COMMON"
+LOCK_COMMON="${SHEEPFOLD_LOCK_COMMON:-${0%/*}/sheepfold-lock-common}"
+[ -r "$LOCK_COMMON" ] || LOCK_COMMON=/usr/libexec/sheepfold/sheepfold-lock-common
+. "$LOCK_COMMON"
 
 STATE_DIR="${SHEEPFOLD_NOTIFICATION_DIR:-/etc/sheepfold/admin-notifications}"
 TELEGRAM_HELPER="${SHEEPFOLD_TELEGRAM_HELPER:-/usr/libexec/sheepfold/sheepfold-telegram-bot}"
 MAX_AGE_SECONDS=2592000
 MAX_NOTIFICATIONS=100
+TEMP_FILE=""
+QUEUE_LOCKED=0
 
 json_escape() {
-	printf '%s' "$1" | tr '\n\r\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
+	# JSON экранирует control-байты, а не удаляет пользовательский текст.
+	printf '%s\n' "$1" | LC_ALL=C awk '
+		BEGIN { for (c = 1; c < 32; c++) escape[sprintf("%c", c)] = sprintf("\\u%04x", c) }
+		{
+			if (NR > 1) printf "\\n"
+			for (i = 1; i <= length($0); i++) {
+				c = substr($0, i, 1)
+				if (c == "\\") printf "\\\\"
+				else if (c == "\"") printf "\\\""
+				else if (c in escape) printf "%s", escape[c]
+				else printf "%s", c
+			}
+		}'
 }
 
 clean_value() {
-	# Значения лежат в простом key=value-файле: переносы и "=" нельзя оставлять как управляющие символы.
+	# Сохраняем прежний построчный формат и ограничение размера; это не JSON.
 	printf '%s' "$1" | tr '\n\r\t=' '    ' | cut -c1-700
 }
 
-value_from_file() {
-	key="$1"
-	file="$2"
-	sed -n "s/^$key=//p" "$file" 2>/dev/null | sed -n '1p'
+notification_time() {
+	local value
+	value="$1"
+	case "$value" in ''|*[!0-9]*) return 1 ;; esac
+	while [ "${value#0}" != "$value" ] && [ "${#value}" -gt 1 ]; do value="${value#0}"; done
+	[ "${#value}" -le 10 ] && [ "$value" -gt 0 ] || return 1
+	printf '%s\n' "$value"
+}
+
+unlock_queue() {
+	if [ "$QUEUE_LOCKED" = 1 ]; then
+		sheepfold_lock_release
+		QUEUE_LOCKED=0
+	fi
+}
+
+notification_cleanup() {
+	# Не чистим чужие временные файлы и не удаляем общий inode блокировки.
+	[ -z "$TEMP_FILE" ] || rm -f "$TEMP_FILE" 2>/dev/null || true
+	unlock_queue
+}
+
+prepare_queue() {
+	local lock_path lock_parent wait_seconds waited_seconds
+	[ ! -L "$STATE_DIR" ] || return 1
+	mkdir -p "$STATE_DIR" || return 1
+	chmod 700 "$STATE_DIR" || return 1
+	lock_path="$STATE_DIR/.queue.lock"
+	[ ! -L "$lock_path" ] || return 1
+	[ ! -e "$lock_path" ] || [ -f "$lock_path" ] || return 1
+	: >> "$lock_path" || return 1
+	chmod 600 "$lock_path" || return 1
+	trap 'notification_cleanup' EXIT
+	trap 'exit 1' HUP INT TERM
+	sheepfold_lock_acquire "$lock_path" 3 >/dev/null 2>&1 || return 1
+	QUEUE_LOCKED=1
+	now="$(date +%s)" || return 1
+	now="$(notification_time "$now")" || return 1
+}
+
+notification_files() {
+	local entries name stem
+	# Читаем сам каталог, а не glob для ls: пустая очередь успешна, отказ ls — нет.
+	entries="$(LC_ALL=C ls -1t "$STATE_DIR")" || return 1
+	while IFS= read -r name; do
+		case "$name" in *.notification) ;; *) continue ;; esac
+		stem="${name%.notification}"
+		# Имена формирует только этот helper; не превращаем строки каталога в shell.
+		case "$stem" in ''|*[!0-9a-f-]*) return 1 ;; esac
+		printf '%s\n' "$name"
+	done <<EOF
+$entries
+EOF
+}
+
+read_notification() {
+	local file data key value
+	file="$1"
+	[ -f "$file" ] && [ ! -L "$file" ] || return 1
+	# Одно успешное чтение всей записи. Частичный stdout и повреждение не означают
+	# истечение TTL; unknown/duplicate поля требуют диагностики, не удаления.
+	data="$(LC_ALL=C awk '
+		BEGIN {
+			split("id type dedupe_key title message created_at", fields, " ")
+			for (i = 1; i <= 6; i++) required[fields[i]] = 1
+		}
+		{
+			sep = index($0, "="); key = substr($0, 1, sep - 1)
+			if (!sep || !(key in required) || seen[key]++) { bad = 1; next }
+			value[key] = substr($0, sep + 1)
+		}
+		END {
+			for (i = 1; i <= 6; i++) if (seen[fields[i]] != 1) bad = 1
+			if (value["id"] !~ /^[0-9]+-[0-9a-f]+$/ || value["dedupe_key"] == "" || value["message"] == "") bad = 1
+			stamp = value["created_at"]
+			if (stamp !~ /^[0-9]+$/) bad = 1
+			sub(/^0+/, "", stamp)
+			if (length(stamp) > 10 || stamp + 0 <= 0) bad = 1
+			if (bad) exit 1
+			for (i = 1; i <= 6; i++) {
+				key = fields[i]
+				if (key == "created_at") printf "%s=%.0f\n", key, stamp + 0
+				else printf "%s=%s\n", key, value[key]
+			}
+		}' "$file")" || return 1
+	while IFS='=' read -r key value; do
+		case "$key" in
+			id) NOTICE_ID="$value" ;;
+			type) NOTICE_TYPE="$value" ;;
+			dedupe_key) NOTICE_KEY="$value" ;;
+			title) NOTICE_TITLE="$value" ;;
+			message) NOTICE_MESSAGE="$value" ;;
+			created_at) NOTICE_TIME="$value" ;;
+		esac
+	done <<EOF
+$data
+EOF
+	[ "${file##*/}" = "$NOTICE_ID.notification" ] || return 1
 }
 
 cleanup_notifications() {
-	now="$(date +%s)"
-	for file in "$STATE_DIR"/*.notification; do
-		[ -f "$file" ] || continue
-		created_at="$(value_from_file created_at "$file")"
-		case "$created_at" in ''|*[!0-9]*) rm -f "$file"; continue ;; esac
-		[ "$created_at" -le "$now" ] || { rm -f "$file"; continue; }
-		[ $((now - created_at)) -le "$MAX_AGE_SECONDS" ] || rm -f "$file"
-	done
-
-	# Очередь нужна нескольким телефонам администраторов, поэтому события не удаляются после первого чтения.
-	ls -1t "$STATE_DIR"/*.notification 2>/dev/null | awk -v keep="$MAX_NOTIFICATIONS" 'NR > keep' |
-		while IFS= read -r stale_file; do
-			[ -n "$stale_file" ] && rm -f "$stale_file"
-		done
+	local names name expired count removals protected
+	protected="${1:-}"
+	names="$(notification_files)" || return 1
+	count=0; removals=""
+	[ -z "$protected" ] || count=1
+	# Сначала подтверждаем весь план удаления. Ошибка reader не превращается
+	# в успешный пустой список и не удаляет даже ещё не просмотренную запись.
+	while IFS= read -r name; do
+		[ -n "$name" ] || continue
+		read_notification "$STATE_DIR/$name" || return 1
+		expired=0
+		if [ "$NOTICE_TIME" -gt "$now" ] || [ $((now - NOTICE_TIME)) -gt "$MAX_AGE_SECONDS" ]; then
+			expired=1
+		elif [ "$NOTICE_ID" != "$protected" ]; then
+			count=$((count + 1))
+			[ "$count" -le "$MAX_NOTIFICATIONS" ] || expired=1
+		fi
+		[ "$expired" = 0 ] || removals="$removals$name
+"
+	done <<EOF
+$names
+EOF
+	while IFS= read -r name; do
+		[ -z "$name" ] || rm -f "$STATE_DIR/$name" || return 1
+	done <<EOF
+$removals
+EOF
 }
 
 enqueue_notification() {
+	local type dedupe_key title message names name hash id file prepared
 	type="$(clean_value "${1:-system}")"
 	dedupe_key="$(clean_value "${2:-}")"
 	title="$(clean_value "${3:-Sheepfold}")"
 	message="$(clean_value "${4:-}")"
-	[ -n "$dedupe_key" ] || return 2
-	[ -n "$message" ] || return 2
+	[ -n "$dedupe_key" ] && [ -n "$message" ] || return 2
 
-	mkdir -p "$STATE_DIR"
-	chmod 700 "$STATE_DIR" 2>/dev/null || true
-	cleanup_notifications
-
-	for file in "$STATE_DIR"/*.notification; do
-		[ -f "$file" ] || continue
-		[ "$(value_from_file dedupe_key "$file")" = "$dedupe_key" ] || continue
-		printf '{"app":"sheepfold","ok":true,"id":"%s","duplicate":true}\n' \
-			"$(json_escape "$(value_from_file id "$file")")"
+	prepare_queue || return 1
+	cleanup_notifications || return 1
+	names="$(notification_files)" || return 1
+	while IFS= read -r name; do
+		[ -n "$name" ] || continue
+		read_notification "$STATE_DIR/$name" || return 1
+		[ "$NOTICE_KEY" = "$dedupe_key" ] || continue
+		printf '{"app":"sheepfold","ok":true,"id":"%s","duplicate":true}\n' "$(json_escape "$NOTICE_ID")"
 		return 0
-	done
+	done <<EOF
+$names
+EOF
 
-	now="$(date +%s)"
 	hash="$(sheepfold_state_hash_text "$dedupe_key")" || return 1
 	hash="$(printf '%s' "$hash" | cut -c1-16)"
+	case "$hash" in ''|*[!0-9a-f]*) return 1 ;; esac
+	[ "${#hash}" = 16 ] || return 1
 	id="$now-$hash"
 	file="$STATE_DIR/$id.notification"
-	tmp="$file.tmp.$$"
-	umask 077
-	{
-		printf 'id=%s\n' "$id"
-		printf 'type=%s\n' "$type"
-		printf 'dedupe_key=%s\n' "$dedupe_key"
-		printf 'title=%s\n' "$title"
-		printf 'message=%s\n' "$message"
-		printf 'created_at=%s\n' "$now"
-	} > "$tmp"
-	chmod 600 "$tmp" 2>/dev/null || true
-	mv -f "$tmp" "$file"
+	# Даже при совпадении внутреннего hash не заменяем другую готовую запись.
+	[ ! -e "$file" ] && [ ! -L "$file" ] || return 1
+	prepared="$(mktemp "$STATE_DIR/.notification.XXXXXX")" || return 1
+	TEMP_FILE="$prepared"
+	printf 'id=%s\ntype=%s\ndedupe_key=%s\ntitle=%s\nmessage=%s\ncreated_at=%s\n' \
+		"$id" "$type" "$dedupe_key" "$title" "$message" "$now" > "$TEMP_FILE" || return 1
+	chmod 600 "$TEMP_FILE" || return 1
+	mv -f "$TEMP_FILE" "$file" || return 1
+	TEMP_FILE=""
+	# Лимит проверяется и после вставки. Новый файл не удаляется при равном mtime;
+	# старые данные не вытесняются ради записи, которую не удалось подготовить.
+	cleanup_notifications "$id" || return 1
+	unlock_queue
 
-	# Telegram даёт немедленную доставку, а очередь ниже остаётся источником для родительского APK.
+	# Telegram даёт немедленную доставку, а очередь остаётся источником для APK.
+	# Медленный потомок не держит lock и не задерживает следующие enqueue/list.
 	if [ -x "$TELEGRAM_HELPER" ]; then
-		("$TELEGRAM_HELPER" send-admin "$title. $message" >/dev/null 2>&1 || true) &
+		("$TELEGRAM_HELPER" send-admin "$title. $message" || true) 9>&- >/dev/null 2>&1 &
 	fi
-
 	printf '{"app":"sheepfold","ok":true,"id":"%s","duplicate":false}\n' "$(json_escape "$id")"
 }
 
 list_notifications() {
-	mkdir -p "$STATE_DIR"
-	chmod 700 "$STATE_DIR" 2>/dev/null || true
-	cleanup_notifications
+	local names name first
+	prepare_queue || return 1
+	cleanup_notifications || return 1
+	names="$(notification_files)" || return 1
+	# Очередь нужна нескольким телефонам: события не удаляются после первого чтения.
 	printf '{"app":"sheepfold","ok":true,"notifications":['
 	first=1
-	for file in $(ls -1t "$STATE_DIR"/*.notification 2>/dev/null || true); do
-		[ -f "$file" ] || continue
+	while IFS= read -r name; do
+		[ -n "$name" ] || continue
+		read_notification "$STATE_DIR/$name" || return 1
 		[ "$first" = 1 ] || printf ','
 		first=0
 		printf '{"id":"%s","type":"%s","title":"%s","message":"%s","createdAt":%s}' \
-			"$(json_escape "$(value_from_file id "$file")")" \
-			"$(json_escape "$(value_from_file type "$file")")" \
-			"$(json_escape "$(value_from_file title "$file")")" \
-			"$(json_escape "$(value_from_file message "$file")")" \
-			"$(value_from_file created_at "$file")"
-	done
+			"$(json_escape "$NOTICE_ID")" "$(json_escape "$NOTICE_TYPE")" \
+			"$(json_escape "$NOTICE_TITLE")" "$(json_escape "$NOTICE_MESSAGE")" "$NOTICE_TIME"
+	done <<EOF
+$names
+EOF
 	printf ']}\n'
 }
 
 case "${1:-list}" in
-	enqueue)
-		enqueue_notification "${2:-system}" "${3:-}" "${4:-Sheepfold}" "${5:-}"
-		;;
-	list)
-		list_notifications
-		;;
-	cleanup)
-		mkdir -p "$STATE_DIR"
-		cleanup_notifications
-		;;
-	*)
-		echo "Usage: sheepfold-admin-notification [enqueue TYPE DEDUPE_KEY TITLE MESSAGE|list|cleanup]" >&2
-		exit 2
-		;;
+	enqueue) enqueue_notification "${2:-system}" "${3:-}" "${4:-Sheepfold}" "${5:-}" ;;
+	list) list_notifications ;;
+	cleanup) prepare_queue && cleanup_notifications ;;
+	*) echo "Usage: sheepfold-admin-notification [enqueue TYPE DEDUPE_KEY TITLE MESSAGE|list|cleanup]" >&2; exit 2 ;;
 esac

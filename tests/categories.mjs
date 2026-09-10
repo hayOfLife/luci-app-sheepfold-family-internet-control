@@ -165,6 +165,7 @@ export const testCategories = Object.freeze({
     'siteListResilience.test.mjs',
   ],
   backend: [
+    'adminNotificationRuntime.test.mjs',
     'childAccessRequestRuntime.test.mjs',
     'childRequestQueueRuntime.test.mjs',
     'pairingAttemptRuntime.test.mjs',
@@ -394,6 +395,7 @@ export const testCategories = Object.freeze({
     'updateTransportSafety.test.mjs',
   ],
   messaging: [
+    'adminNotificationRuntime.test.mjs',
     'childAccessRequestRuntime.test.mjs',
     'childRequestQueueRuntime.test.mjs',
     'childAccessRequest.test.mjs',

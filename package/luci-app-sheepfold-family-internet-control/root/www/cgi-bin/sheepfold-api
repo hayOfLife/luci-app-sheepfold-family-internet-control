@@ -392,8 +392,14 @@ case "$path_info" in
         [ "$method" = "GET" ] || method_not_allowed
         enforce_rate_limit admin_read 120 60
         require_admin
-        header_json "200 OK"
-        "$ADMIN_NOTIFICATION" list
+        # Не выдаём 200 до успешного чтения: частичный список не равен пустой очереди.
+        if output="$("$ADMIN_NOTIFICATION" list 2>/dev/null)"; then
+            header_json "200 OK"
+            printf '%s\n' "$output"
+        else
+            header_json "503 Service Unavailable"
+            printf '{"app":"sheepfold","ok":false,"error":"notifications_unavailable"}\n'
+        fi
         ;;
     /child-wifi-networks)
         case "$method" in

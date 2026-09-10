@@ -1,5 +1,13 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-10, **r300**, based on `17e4f90` (r299).
+B68–B71 fix the separate persistent administrator-notification queue: verified
+reads, truthful HTTP/JSON, coordinated deduplication/retention, private staging.
+The [71-card register](bug-register.ru.md) and [r300 report](audit-fixes-r300.ru.md)
+record 152 selected tests, local test IPKs and remaining R12 limits. Production
+Android, workflows and runner remain unchanged. No new live delivery/SDK claim.
+
+
 Focused continuation: 2026-09-09, **r299**, based on `7f77e56` (r298).
 B65–B67 preserve unreadable/malformed request records, serialize cooperating queue
 create/list/prune operations, and check private staging and publication. 148 focused

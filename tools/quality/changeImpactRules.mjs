@@ -66,6 +66,7 @@ export const checkCatalog = Object.freeze({
 
 const routerRuntimeConsumers = Object.freeze([
   'accessPolicyRuntime.test.mjs',
+  'adminNotificationRuntime.test.mjs',
   'apiFormRuntime.test.mjs',
   'apiRateLimitRuntime.test.mjs',
   'childAccessRequestRuntime.test.mjs',
@@ -301,6 +302,16 @@ export const impactRules = Object.freeze([
       'adminWifiValidationRuntime.test.mjs',
     ]),
     review: 'Запустить всех прямых потребителей изменённого fixture; длинный runtime-файл не переносить ради этого в быструю tooling-категорию.',
+  }),
+  Object.freeze({
+    id: 'adminNotificationRuntimeTestFixture',
+    area: 'Runtime-fixture общей очереди уведомлений',
+    pattern: /^tests\/helpers\/adminNotificationFixture\.mjs$/,
+    categories: ['tooling'],
+    checks: ['lintJs'],
+    risk: 'medium',
+    directTests: Object.freeze(['adminNotificationRuntime.test.mjs']),
+    review: 'Проверить queue/CGI, trace отказов и native flock; не заменять моделью проверку доставки на телефон.',
   }),
   Object.freeze({
     id: 'childAccessRequestRuntimeTestFixture',

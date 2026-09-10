@@ -609,3 +609,16 @@ Native flock/права/symlink выполняются в Linux; Windows-мод�
 messaging. Карта fixture → tests включает оба потребителя. Команды, 148 профильных
 тестов и ограничения: [r299](audit-fixes-r299.ru.md). Полный прогон не требуется
 только из-за добавления этого test-файла; аппаратные проверки не заменяются им.
+
+## Общая административная очередь: runtime r300
+
+`tests/adminNotificationRuntime.test.mjs` и `helpers/adminNotificationFixture.mjs`
+выполняют настоящие helper/CGI в удаляемой `.build`. Fault-tool должен подтвердить
+вызов trace; concurrency/Unix modes требуют Linux и настоящего flock. На Windows
+такие сценарии явно пропускаются, это не доказательство Linux-поведения.
+
+Запуск из корня: `node --test tests/adminNotificationRuntime.test.mjs` (exit 0,
+41 pass на Linux). Категории backend/messaging; direct consumers обеих используемых
+fixtures учтены в changeImpactRules. Профильный контур — 152 теста в 10 файлах,
+не весь suite. Команды, prerequisites, известный исходный fail и пределы доказательства
+описаны в [отчёте r300](audit-fixes-r300.ru.md).

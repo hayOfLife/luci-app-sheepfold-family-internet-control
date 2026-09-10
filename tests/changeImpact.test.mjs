@@ -240,6 +240,7 @@ describe('change impact advisor §impact1', () => {
 
   it('runs every direct consumer of a changed shared runtime fixture', () => {
     for (const helperName of [
+      'adminNotificationFixture.mjs',
       'adminConfigRuntimeFixture.mjs',
       'apiRateLimitFixture.mjs',
       'childAccessRequestFixture.mjs',

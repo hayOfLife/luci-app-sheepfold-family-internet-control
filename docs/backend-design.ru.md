@@ -357,3 +357,16 @@ config pairing_global 'pairing_global'  # (§w2pcn9t)
 - [`docs/developer-task.ru.md`](developer-task.ru.md) — точка входа
 - [`docs/agent-playbook.ru.md`](agent-playbook.ru.md) — плейбук для AI-агентов
 - [`docs/live-router-testing.ru.md`](live-router-testing.ru.md) — тестирование на живом роутере
+
+### Надёжность общей очереди уведомлений (r300)
+
+`sheepfold-admin-notification` использует общий inode flock для enqueue/list/cleanup,
+проверяет всю запись и текущие часы до плана удаления. При ошибке reader/enumeration
+данные не считаются отсутствующими. Подготовка собственного файла требует 0700/0600;
+lock не удаляется, чужие аварийные tmp не чистятся. Квота 100 проверяется после
+публикации, а старые записи не вытесняются ради ещё не созданного файла. После
+публикации и отказа quota-rm новое событие может уже существовать при nonzero exit.
+
+CGI буферизует успешный `/notifications`; nonzero helper даёт 503
+`notifications_unavailable`. Telegram запускается без удержания queue-lock и
+каналов ответа, но не получил транзакционную гарантию доставки. [r300](audit-fixes-r300.ru.md).

@@ -51,3 +51,11 @@
 ## Ревью endpoint
 
 Перед merge проверить: authentication, authorization, validation, size/time limits, rate limit, idempotency, atomic persistence, runtime apply, stable error codes, secret-free logs и поведение старого клиента.
+
+### Ошибки списка общих уведомлений с r300
+
+Текущий legacy `/notifications` при недоступности helper/очереди возвращает 503
+`notifications_unavailable` в поле `error`. Частичный stdout не выдаётся после
+заранее отправленного 200. Пустая исправная очередь возвращается успешно.
+Авторизация, квота, source guard и схема события не меняются; такой отказ не
+является отзывом административного сеанса. [Проверки и границы](audit-fixes-r300.ru.md).
