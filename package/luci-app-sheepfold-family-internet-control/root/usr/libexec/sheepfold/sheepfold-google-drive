@@ -79,48 +79,193 @@ json_get_number() {
 	printf '%s' "$2" | sed -n "s/.*\"$key\":\\([0-9][0-9]*\\).*/\\1/p" | head -1
 }
 
-access_token() {
-	local now expires_at cached_token response new_token expires_in client_id client_secret refresh_token
-
-	require_tooling || return 1
-	now="$(date +%s 2>/dev/null || printf 0)"
-	case "$now" in ''|*[!0-9]*) now=0 ;; esac
-
-	if [ -r "$TOKEN_CACHE" ]; then
-		cached_token="$(json_get_string access_token "$(cat "$TOKEN_CACHE" 2>/dev/null || true)")"
-		expires_at="$(json_get_number expires_at "$(cat "$TOKEN_CACHE" 2>/dev/null || true)")"
-		case "$expires_at" in ''|*[!0-9]*) expires_at=0 ;; esac
-		if [ -n "$cached_token" ] && [ "$now" -gt 0 ] && [ "$expires_at" -gt "$now" ]; then
-			printf '%s' "$cached_token"
-			return 0
-		fi
+# Снимок реквизитов нужен и для обмена, и для ключа кэша. Ошибку get нельзя
+# принимать за пустой client_secret: пустое поле допустимо только если отсутствует.
+drive_auth_read() {
+	auth_snapshot="$(uci -q show sheepfold.gdrive)" || return 1
+	client_id="$(uci -q get sheepfold.gdrive.client_id)" || return 1
+	refresh_token="$(uci -q get sheepfold.gdrive.refresh_token)" || return 1
+	if ! client_secret="$(uci -q get sheepfold.gdrive.client_secret)"; then
+		case "
+$auth_snapshot" in *'
+sheepfold.gdrive.client_secret='*) return 1 ;; esac
+		client_secret=''
 	fi
+	[ -n "$client_id" ] && [ -n "$refresh_token" ] || return 1
+	[ "${#client_id}" -le 8192 ] && [ "${#client_secret}" -le 8192 ] && [ "${#refresh_token}" -le 8192 ] || return 1
+	drive_auth_unchanged
+}
 
-	client_id="$(uci_get client_id '')"
-	client_secret="$(uci_get client_secret '')"
-	refresh_token="$(uci_get refresh_token '')"
+drive_auth_unchanged() {
+	local current
+	current="$(uci -q show sheepfold.gdrive)" || return 1
+	[ "$current" = "$auth_snapshot" ]
+}
 
-	response="$(curl -sS -m 30 -X POST "$TOKEN_URL" \
-		-d "client_id=$client_id" \
-		-d "client_secret=$client_secret" \
-		-d "refresh_token=$refresh_token" \
-		-d "grant_type=refresh_token" 2>/dev/null || true)"
+# Нулевые/нечисловые часы не подтверждают срок. Ограничение разрядности
+# удерживает всю арифметику внутри int64; ведущие нули остаются десятичными.
+drive_auth_number() {
+	local value
+	value="$(drive_decimal "$1")" || return 1
+	[ "${#value}" -le 10 ] || return 1
+	printf '%s' "$value"
+}
 
-	new_token="$(json_get_string access_token "$response")"
-	expires_in="$(json_get_number expires_in "$response")"
-	case "$expires_in" in ''|*[!0-9]*) expires_in=3000 ;; esac
+drive_auth_now() {
+	local now
+	now="$(date +%s)" || return 1
+	now="$(drive_auth_number "$now")" || return 1
+	[ "$now" -gt 0 ] || return 1
+	printf '%s' "$now"
+}
 
-	if [ -z "$new_token" ]; then
-		printf '{"ok":false,"error":"token_refresh_failed"}\n' >&2
+drive_bearer_valid() {
+	[ "${#1}" -le 8192 ] || return 1
+	case "$1" in ''|*[!A-Za-z0-9._~+/=-]*) return 1 ;; esac
+	# Bearer не может добавлять строки HTTP-заголовков или JSON-кавычки.
+	return 0
+}
+
+drive_auth_key() {
+	local digest
+	if command -v sha256sum >/dev/null 2>&1; then
+		digest="$(sha256sum "$1")" || return 1
+		digest="${digest%% *}"
+	elif command -v openssl >/dev/null 2>&1; then
+		digest="$(openssl dgst -sha256 "$1")" || return 1
+		digest="${digest##* }"
+	else
 		return 1
 	fi
-
-	expires_at=$((now + expires_in - 60))
-	mkdir -p /tmp/sheepfold 2>/dev/null || true
-	printf '{"access_token":"%s","expires_at":%s}\n' "$(json_escape "$new_token")" "$expires_at" >"$TOKEN_CACHE"
-	chmod 600 "$TOKEN_CACHE" 2>/dev/null || true
-	printf '%s' "$new_token"
+	[ "${#digest}" = 64 ] || return 1
+	case "$digest" in *[!a-fA-F0-9]*) return 1 ;; esac
+	printf '%s' "$digest" | tr 'A-F' 'a-f'
 }
+
+# json_load в jshn.sh использует eval командной подстановки и может скрыть
+# exit парсера. Исполняем только полностью полученный вывод доверенного jshn.
+drive_json_load() {
+	local json_script
+	json_script="$(jshn -r "$1")" || return 1
+	eval "$json_script"
+}
+
+# Не regex: OAuth JSON может содержать пробелы и другой порядок полей.
+# Разбираем ответ в subshell, не меняя JSON-контекст вызывающего обработчика.
+drive_oauth_values() (
+	# Native jshn проверяет отсутствующие поля через unset-переменные.
+	set +u
+	[ -r /usr/share/libubox/jshn.sh ] || exit 1
+	. /usr/share/libubox/jshn.sh
+	json_init
+	drive_json_load "$1" || exit 1
+	if json_get_type value_type error; then exit 1; fi
+	json_get_type value_type access_token || exit 1
+	[ "$value_type" = string ] || exit 1
+	json_get_var new_token access_token || exit 1
+	drive_bearer_valid "$new_token" || exit 1
+	json_get_type value_type token_type || exit 1
+	[ "$value_type" = string ] || exit 1
+	json_get_var token_kind token_type || exit 1
+	token_kind="$(printf '%s' "$token_kind" | tr 'A-Z' 'a-z')" || exit 1
+	[ "$token_kind" = bearer ] || exit 1
+	json_get_type value_type expires_in || exit 1
+	[ "$value_type" = int ] || exit 1
+	json_get_var lifetime expires_in || exit 1
+	lifetime="$(drive_auth_number "$lifetime")" || exit 1
+	[ "$lifetime" -gt 0 ] && [ "$lifetime" -le 2147483647 ] || exit 1
+	printf '%s\t%s' "$new_token" "$lifetime"
+)
+
+drive_cached_token() (
+	# Native jshn проверяет отсутствующие поля через unset-переменные.
+	set +u
+	[ -r /usr/share/libubox/jshn.sh ] || exit 1
+	. /usr/share/libubox/jshn.sh
+	json_init
+	drive_json_load "$1" || exit 1
+	json_get_type value_type cache_key || exit 1
+	[ "$value_type" = string ] || exit 1
+	json_get_var stored_key cache_key || exit 1
+	[ "$stored_key" = "$2" ] || exit 1
+	json_get_type value_type access_token || exit 1
+	[ "$value_type" = string ] || exit 1
+	json_get_var cached_token access_token || exit 1
+	drive_bearer_valid "$cached_token" || exit 1
+	for key in issued_at expires_at; do
+		json_get_type value_type "$key" || exit 1
+		[ "$value_type" = int ] || exit 1
+	done
+	json_get_var issued_at issued_at || exit 1
+	json_get_var expires_at expires_at || exit 1
+	issued_at="$(drive_auth_number "$issued_at")" || exit 1
+	expires_at="$(drive_auth_number "$expires_at")" || exit 1
+	[ "$issued_at" -gt 0 ] && [ "$3" -ge "$issued_at" ] && [ "$expires_at" -gt "$3" ] || exit 1
+	printf '%s' "$cached_token"
+)
+
+access_token() (
+	umask 077
+	LC_ALL=C
+	export LC_ALL
+	require_tooling || exit 1
+	# Кэш необязателен, но произвольный объект по его пути нельзя перезаписать.
+	[ ! -L "$TOKEN_CACHE" ] || exit 1
+	[ ! -e "$TOKEN_CACHE" ] || [ -f "$TOKEN_CACHE" ] || exit 1
+	work="$(drive_workdir)" || exit 1
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	drive_auth_read || exit 1
+	# Длины отделяют поля без неоднозначной конкатенации; в кэше нет refresh token.
+	printf '%s:%s%s:%s%s:%s' "${#client_id}" "$client_id" \
+		"${#client_secret}" "$client_secret" "${#refresh_token}" "$refresh_token" >"$work/identity" || exit 1
+	cache_key="$(drive_auth_key "$work/identity")" || exit 1
+	now="$(drive_auth_now)" || exit 1
+	if [ -f "$TOKEN_CACHE" ]; then
+		chmod 600 "$TOKEN_CACHE" || exit 1
+		cache_data="$(cat "$TOKEN_CACHE")" || exit 1
+		if cached_token="$(drive_cached_token "$cache_data" "$cache_key" "$now")"; then
+			drive_auth_unchanged || exit 1
+			printf '%s' "$cached_token"
+			exit 0
+		fi
+	fi
+	# curl кодирует содержимое, а argv содержит пути, не сами секреты.
+	printf '%s' "$client_id" >"$work/client-id" || exit 1
+	printf '%s' "$client_secret" >"$work/client-secret" || exit 1
+	printf '%s' "$refresh_token" >"$work/refresh-token" || exit 1
+	chmod 600 "$work/identity" "$work/client-id" "$work/client-secret" "$work/refresh-token" || exit 1
+	code="$(curl -sS -m 30 -X POST -o "$work/response" -w '%{http_code}' "$TOKEN_URL" \
+		--data-urlencode "client_id@$work/client-id" \
+		--data-urlencode "client_secret@$work/client-secret" \
+		--data-urlencode "refresh_token@$work/refresh-token" \
+		--data 'grant_type=refresh_token')" || exit 1
+	[ "$code" = 200 ] || exit 1
+	response_bytes="$(drive_local_bytes "$work/response")" || exit 1
+	[ "$response_bytes" -le 65536 ] || exit 1
+	response="$(cat "$work/response")" || exit 1
+	values="$(drive_oauth_values "$response")" || exit 1
+	new_token="${values%%	*}"
+	expires_in="${values#*	}"
+	expires_at=$((now + expires_in))
+	finished_at="$(drive_auth_now)" || exit 1
+	[ "$finished_at" -ge "$now" ] && [ "$finished_at" -lt "$expires_at" ] || exit 1
+	drive_auth_unchanged || exit 1
+	# Короткий положительный срок не продлеваем запасным значением. Такой токен
+	# используется сейчас, но не кэшируется с фиктивным длинным сроком.
+	expires_at=$((expires_at - 60))
+	if [ "$expires_at" -gt "$finished_at" ]; then
+		printf '{"access_token":"%s","issued_at":%s,"expires_at":%s,"cache_key":"%s"}\n' \
+			"$new_token" "$now" "$expires_at" "$cache_key" >"$work/cache" || exit 1
+		chmod 600 "$work/cache" || exit 1
+		[ ! -L "$TOKEN_CACHE" ] || exit 1
+		[ ! -e "$TOKEN_CACHE" ] || [ -f "$TOKEN_CACHE" ] || exit 1
+		# Сначала целая закрытая запись, затем rename на той же файловой системе.
+		# Отказ не обнуляет предыдущий кэш и не публикует частичный JSON.
+		mv "$work/cache" "$TOKEN_CACHE" || exit 1
+	fi
+	printf '%s' "$new_token"
+)
 
 drive_request() {
 	local method url extra token
@@ -168,10 +313,12 @@ drive_local_bytes() {
 # jshn уже входит в зависимости обеих редакций. Не подключаем AI-only JSON
 # library и не разбираем ответ Drive регуляркой, зависящей от пробелов.
 drive_metadata_values() (
+	# Native jshn проверяет отсутствующие поля через unset-переменные.
+	set +u
 	[ -r /usr/share/libubox/jshn.sh ] || exit 1
 	. /usr/share/libubox/jshn.sh
 	json_init
-	json_load "$1" || exit 1
+	drive_json_load "$1" || exit 1
 	json_get_type value_type id || exit 1
 	[ "$value_type" = string ] || exit 1
 	json_get_var file_id id || exit 1

@@ -692,3 +692,30 @@ Python запускается с `-S`, без стороннего site startup;
 writer-планировщик, hardening/пакеты и карта выбора тестов. Никаких облачных аккаунтов
 или реальных конфигураций; fixture удаляется после проверки. Несвязанные Android,
 firewall и полный набор не требуются для этой локальной правки.
+
+
+## OAuth Google Drive: профиль r305
+
+В существующем `tests/googleDriveUploadRuntime.test.mjs` добавлены 40 сценариев
+обмена/кэша; прежние 30 upload-сценариев сохранены. JSON/curl/UCI — двойники, а
+production shell выполняется настоящий. curl записывает раскодированные поля,
+Authorization и режимы файлов. Искусственные отказы подтверждаются trace вызова.
+Нативные права/symlink требуют Linux, неподходящая платформа не считается успехом.
+
+Для чистого сравнения используется `SHEEPFOLD_GDRIVE_TEST_SOURCE`, каталог с
+оригинальным файлом `sheepfold-google-drive` из базового коммита. Assertions одни
+и те же; прежняя версия не получает предварительного исправления деклараций.
+Отсутствие native jshn не скрывается: модель отражает проверенные по исходникам
+unset/exit-особенности, но не является доказательством работы всей libubox.
+
+Рабочий каталог — корень проекта; ожидается exit 0:
+
+```sh
+node --test --test-name-pattern 'Google Drive OAuth' tests/googleDriveUploadRuntime.test.mjs
+node scripts/run-test-category.mjs --file googleDriveUploadRuntime.test.mjs --file logStorage.test.mjs --file logWriterRuntime.test.mjs --file packageHardeningRuntime.test.mjs --file testIpkPermissions.test.mjs
+```
+
+Для проверки IPK перед runner нужен собранный файл в `SHEEPFOLD_TEST_IPK`.
+Файлы `.build/gdrive-fixtures` удаляются после каждого сценария. Настоящие облачные
+аккаунты и секреты не нужны. Полный suite не требуется для этой узкой правки;
+обоснование зависимостей и результаты — в [отчёте r305](audit-fixes-r305.ru.md).

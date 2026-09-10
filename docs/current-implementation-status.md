@@ -1,5 +1,16 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-10, **r305**, based on `4936914` (r304).
+B85–B87 validate OAuth exchange, bind the RAM token cache to observed credentials,
+and publish private cache records after successful preparation. The previous r304
+upload/remote-size fixes are preserved. See the [87-card register](bug-register.ru.md)
+and [r305 report](audit-fixes-r305.ru.md): 150 focused tests in five files, not a full
+suite or live Google/native libubox certification. Folder cache/account migration,
+search/list/restore, shared status commits and writer races remain R14.
+Access policy, Android, workflows and runner code are unchanged.
+
+Historical continuation:
+
 Focused continuation: 2026-09-10, **r303**, based on `0b3f0e4` (r302).
 B79–B81 align maintenance rotation with the shared RAM-path contract, check all
 staging/statistics/publication failures and preserve complete lines at byte boundaries.
