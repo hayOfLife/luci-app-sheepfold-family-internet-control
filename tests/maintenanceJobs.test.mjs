@@ -168,9 +168,14 @@ describe('background maintenance jobs §maintjob1', () => {
       'sheepfold.global.log_max_size_kb=64',
     ].join('\n') + '\n');
     executable(join(bin, 'uci'), simpleUciSource());
+    // Переносим лишь корень общей проверки пути в тот же изолированный fixture.
+    const logCommon = join(bin, 'log-common');
+    writeFileSync(logCommon, read('package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-log-common')
+      .replaceAll('/tmp/sheepfold', fixturePath(root)));
 
     const result = runHelper('rotate-log', {
       TEST_UCI: fixturePath(uci),
+      SHEEPFOLD_LOG_COMMON: fixturePath(logCommon),
       SHEEPFOLD_UCI_BIN: fixturePath(join(bin, 'uci')),
       SHEEPFOLD_LOCK_COMMON: fixturePath(join(bin, 'lock-common')),
       SHEEPFOLD_MAINTENANCE_RUNTIME_DIR: fixturePath(runtime),

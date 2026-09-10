@@ -3,15 +3,17 @@
 # настройки, а префикс пути не защищает от «..» и символических ссылок.
 # Это проверка согласованных процессов, не openat/O_NOFOLLOW против root-race.
 sheepfold_log_path_read() {
-    local path config probe_status
-    if ! path="$(uci -q get sheepfold.global.log_cache_path 2>/dev/null)"; then
-        config="$(uci -q show sheepfold 2>/dev/null)" || return 1
+    local path config probe_status uci_bin default_path
+    uci_bin="${1:-uci}"
+    default_path="${2:-/tmp/sheepfold/events.log}"
+    if ! path="$("$uci_bin" -q get sheepfold.global.log_cache_path 2>/dev/null)"; then
+        config="$("$uci_bin" -q show sheepfold 2>/dev/null)" || return 1
         probe_status=0
         printf '%s\n' "$config" | grep -q '^sheepfold\.global\.log_cache_path=' || probe_status=$?
         [ "$probe_status" = 1 ] || return 1
-        path=/tmp/sheepfold/events.log
+        path="$default_path"
     fi
-    [ -n "$path" ] || path=/tmp/sheepfold/events.log
+    [ -n "$path" ] || path="$default_path"
     printf '%s\n' "$path"
 }
 

@@ -18,6 +18,7 @@ FIREWALL="${SHEEPFOLD_FIREWALL_HELPER:-/usr/libexec/sheepfold/sheepfold-firewall
 MAINTENANCE_LOCK="${SHEEPFOLD_MAINTENANCE_LOCK:-/tmp/sheepfold/maintenance.flock}"
 LOG_LOCK="${SHEEPFOLD_LOG_LOCK:-/tmp/sheepfold/log-maintenance.flock}"
 DEFAULT_LOG="${SHEEPFOLD_MAINTENANCE_DEFAULT_LOG:-/tmp/sheepfold/events.log}"
+LOG_COMMON="${SHEEPFOLD_LOG_COMMON:-${0%/*}/sheepfold-log-common}"
 CHILD_WIFI_HISTORY_DIR="${SHEEPFOLD_CHILD_WIFI_STATE_DIR:-/etc/sheepfold/child-wifi-networks}"
 LOG_ROTATION_INTERVAL=3600
 DEVICE_CLEANUP_INTERVAL=86400
@@ -111,25 +112,40 @@ task_due() {
     [ $((now - last)) -ge "$interval" ]
 }
 
-safe_log_path() {
-    local path
-    path="$(uci_get sheepfold.global.log_cache_path)"
-    [ -n "$path" ] || path="$DEFAULT_LOG"
-    case "$path" in
-        /tmp/sheepfold/*) printf '%s\n' "$path" ;;
-        "$DEFAULT_LOG") printf '%s\n' "$path" ;;
-        *) printf '%s\n' "$DEFAULT_LOG" ;;
-    esac
+# Не подменяем ошибку чтения настройкой по умолчанию: меньшее удержание
+# способно удалить нужные записи. Default допустим только при отсутствии ключа.
+rotation_option() {
+    local key value config probe_status
+    key="$1"
+    if ! value="$(uci_cmd -q get "sheepfold.global.$key" 2>/dev/null)"; then
+        config="$(uci_cmd -q show sheepfold 2>/dev/null)" || return 1
+        probe_status=0
+        printf '%s\n' "$config" | grep -q "^sheepfold\.global\.${key}=" || probe_status=$?
+        [ "$probe_status" = 1 ] || return 1
+        value="$2"
+    fi
+    printf '%s\n' "$value"
+}
+
+rotation_decimal() {
+    local value
+    value="$1"
+    valid_uint "$value" || return 1
+    while [ "${value#0}" != "$value" ]; do value="${value#0}"; done
+    [ -n "$value" ] || value=0
+    # Защищаем shell arithmetic от переполнения до диапазонного ограничения.
+    [ "${#value}" -le 9 ] || value=999999999
+    printf '%s\n' "$value"
 }
 
 log_retention_days() {
     local value
-    value="$(uci_get sheepfold.global.log_retention)"
+    value="$(rotation_option log_retention 3d)" || return 1
     case "$value" in
         *d) value="${value%d}" ;;
         *) value=3 ;;
     esac
-    valid_uint "$value" || value=3
+    value="$(rotation_decimal "$value")" || value=3
     [ "$value" -ge 1 ] || value=1
     [ "$value" -le 3650 ] || value=3650
     printf '%s\n' "$value"
@@ -137,52 +153,83 @@ log_retention_days() {
 
 log_max_bytes() {
     local value
-    value="$(uci_get sheepfold.global.log_max_size_kb)"
-    valid_uint "$value" || value=1024
+    value="$(rotation_option log_max_size_kb 1024)" || return 1
+    value="$(rotation_decimal "$value")" || value=1024
     [ "$value" -ge 64 ] || value=64
     [ "$value" -le 65536 ] || value=65536
     printf '%s\n' $((value * 1024))
 }
 
-rotate_log_locked() (
-    sheepfold_lock_acquire "$LOG_LOCK" 10 || return 1
+# Считываем счётчик без pipeline, чтобы успешный tr не скрыл ошибку wc.
+rotation_count() {
+    local value kind file
+    kind="$1"
+    file="$2"
+    value="$(wc "$kind" < "$file")" || return 1
+    value="$(printf '%s' "$value" | tr -d '[:space:]')" || return 1
+    valid_uint "$value" || return 1
+    printf '%s\n' "$value"
+}
 
-    log_file="$(safe_log_path)"
+# Дополнительный байт показывает, была ли граница хвоста границей строки.
+# Без него sed '1d' терял целую первую строку при точном попадании tail -c.
+rotation_tail() {
+    local source count dest scratch
+    source="$1"; count="$2"; dest="$3"; scratch="$4"
+    tail -c "$((count + 1))" "$source" > "$scratch" 2>/dev/null || return 1
+    LC_ALL=C awk 'NR > 1 { print }' "$scratch" > "$dest" || return 1
+}
+
+rotate_log_locked() (
+    [ -r "$LOG_COMMON" ] || return 1
+    . "$LOG_COMMON" || return 1
+    log_file="$(sheepfold_log_path_read "$UCI_BIN" "$DEFAULT_LOG")" || return 1
+    sheepfold_log_path_check "$log_file" allow-missing || return 1
+    sheepfold_lock_acquire "$LOG_LOCK" 10 || return 1
+    workspace=""
+    # Каталог принадлежит только этому проходу. Ошибка очистки не меняет
+    # результат публикации; неизвестные временные файлы не удаляем.
+    trap '[ -z "$workspace" ] || rm -rf "$workspace" 2>/dev/null || true; sheepfold_lock_release' EXIT
+    trap 'exit 1' HUP INT TERM
+
+    sheepfold_log_path_check "$log_file" allow-missing || return 1
     log_dir="${log_file%/*}"
-    retention="$(log_retention_days)"
-    max_bytes="$(log_max_bytes)"
-    today="$(today_ymd)"
+    retention="$(log_retention_days)" || return 1
+    max_bytes="$(log_max_bytes)" || return 1
+    today="$(today_ymd)" || return 1
+    case "$today" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) return 1 ;; esac
     current_year="${today%%-*}"
     current_month_day="${today#*-}"
     current_month="${current_month_day%%-*}"
     current_day="${current_month_day#*-}"
-    source_file="${log_file}.source.$$"
-    bounded_file="${log_file}.bounded.$$"
-    age_file="${log_file}.age.$$"
-    tail_file="${log_file}.tail.$$"
-    final_file="${log_file}.new.$$"
-    trap 'rm -f "$source_file" "$bounded_file" "$age_file" "$tail_file" "$final_file" 2>/dev/null || true; sheepfold_lock_release' EXIT HUP INT TERM
 
-    mkdir -p "$log_dir"
-    [ -e "$log_file" ] || : > "$log_file"
-    chmod 600 "$log_file" 2>/dev/null || true
-    before_bytes="$(wc -c < "$log_file" | tr -d ' ')"
-    before_lines="$(wc -l < "$log_file" | tr -d ' ')"
-    valid_uint "$before_bytes" || before_bytes=0
-    valid_uint "$before_lines" || before_lines=0
+    umask 077
+    mkdir -p "$log_dir" || return 1
+    chmod 700 "$log_dir" || return 1
+    sheepfold_log_path_check "$log_file" || return 1
+    if [ ! -e "$log_file" ]; then
+        : > "$log_file" || return 1
+    fi
+    chmod 600 "$log_file" || return 1
+    created_dir="$(mktemp -d "$log_dir/.rotate-XXXXXX")" || return 1
+    workspace="$created_dir"
+    chmod 700 "$workspace" || return 1
+    bounded_file="$workspace/bounded"
+    age_file="$workspace/age"
+    tail_file="$workspace/tail"
+    final_file="$workspace/new"
+    before_bytes="$(rotation_count -c "$log_file")" || return 1
+    before_lines="$(rotation_count -l "$log_file")" || return 1
 
-    # A broken producer must not make an hourly task parse an unbounded file.
-    # Only the newest size limit plus one capped-message margin can contribute
-    # to the final log anyway. Drop the first partial line after tail -c.
     processing_limit=$((max_bytes + 65536))
     if [ "$before_bytes" -gt "$processing_limit" ]; then
-        tail -c "$processing_limit" "$log_file" > "$source_file" 2>/dev/null || return 1
-        sed '1d' "$source_file" > "$bounded_file" || return 1
+        rotation_tail "$log_file" "$processing_limit" "$bounded_file" "$tail_file" || return 1
     else
-        cp "$log_file" "$bounded_file"
+        cp "$log_file" "$bounded_file" || return 1
     fi
 
-    if clock_is_sane; then
+    # Неправдоподобный год отменяет только age-pruning, не ограничение RAM.
+    if [ "$current_year" -ge 2020 ] && [ "$current_year" -le 2100 ]; then
         awk -v cy="$current_year" -v cm="$current_month" -v cd="$current_day" -v keep="$retention" '
             function civil_days(y, m, d, era, yoe, doy, doe) {
                 y -= (m <= 2)
@@ -212,29 +259,26 @@ rotate_log_locked() (
                 }
                 if (civil_days(year, month, day) >= cutoff) print
             }
-        ' "$bounded_file" > "$age_file"
+        ' "$bounded_file" > "$age_file" || return 1
     else
-        cp "$bounded_file" "$age_file"
+        cp "$bounded_file" "$age_file" || return 1
     fi
 
-    age_bytes="$(wc -c < "$age_file" | tr -d ' ')"
-    valid_uint "$age_bytes" || age_bytes=0
+    age_bytes="$(rotation_count -c "$age_file")" || return 1
     if [ "$age_bytes" -gt "$max_bytes" ]; then
-        tail -c "$max_bytes" "$age_file" > "$tail_file" 2>/dev/null || return 1
-        # tail -c may begin in the middle of a UTF-8 line. Drop that first fragment;
-        # log messages are capped by the writer, so at least the newest lines remain.
-        sed '1d' "$tail_file" > "$final_file"
+        rotation_tail "$age_file" "$max_bytes" "$final_file" "$tail_file" || return 1
     else
-        cp "$age_file" "$final_file"
+        cp "$age_file" "$final_file" || return 1
     fi
 
-    chmod 600 "$final_file" 2>/dev/null || true
-    mv -f "$final_file" "$log_file"
-    rm -f "$source_file" "$bounded_file" "$age_file" "$tail_file" 2>/dev/null || true
-    after_bytes="$(wc -c < "$log_file" | tr -d ' ')"
-    after_lines="$(wc -l < "$log_file" | tr -d ' ')"
-    valid_uint "$after_bytes" || after_bytes=0
-    valid_uint "$after_lines" || after_lines=0
+    chmod 600 "$final_file" || return 1
+    # Проверяем итог до единственной замены: сбой измерения/фильтрации
+    # не публикует частичный журнал даже при отключённом контекстом set -e.
+    after_bytes="$(rotation_count -c "$final_file")" || return 1
+    after_lines="$(rotation_count -l "$final_file")" || return 1
+    [ "$after_bytes" -le "$max_bytes" ] || return 1
+    sheepfold_log_path_check "$log_file" || return 1
+    mv -f "$final_file" "$log_file" || return 1
     printf '%s\t%s\t%s\t%s\n' "$before_bytes" "$after_bytes" "$before_lines" "$after_lines"
 )
 

@@ -1,5 +1,15 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-10, **r303**, based on `0b3f0e4` (r302).
+B79–B81 align maintenance rotation with the shared RAM-path contract, check all
+staging/statistics/publication failures and preserve complete lines at byte boundaries.
+The [81-card register](bug-register.ru.md) and [r303 report](audit-fixes-r303.ru.md)
+separate reproduced failures from controls already passing on the baseline.
+Android, workflow/runner and access policy remain unchanged. R13 remains open
+for install/cloud readers, crash cleanup, retry policy and privileged file races.
+
+Historical continuation:
+
 Focused continuation: 2026-09-10, **r302**, based on `0238869` (r301).
 B76–B78 unify writer/API RAM-path validation, verify primary record writes and
 isolate background cloud descriptors. The [78-card register](bug-register.ru.md)

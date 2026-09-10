@@ -662,3 +662,16 @@ node --test tests/logWriterRuntime.test.mjs tests/legacyLogRuntime.test.mjs
 а также обе тестовые упаковки и hardening. Перечень, воспроизведение baseline,
 известные ограничения и результаты — [r302](audit-fixes-r302.ru.md).
 Успех не доказывает доставку в облако, установку на роутере или долговечность RAM.
+
+## Ротация RAM-журнала: runtime r303
+
+`maintenanceRotationRuntime.test.mjs` проверяет путь, подтверждённые ошибки чтения
+и публикации, временные права, точные byte-boundaries, десятичную квоту и общий
+Linux flock. 34 сценария используют изолированную `.build`-папку; fault-команды
+обязаны оставить trace. Некоторые отказы cp/awk/mv уже проходили на baseline:
+контрольный тест не является новой найденной ошибкой. Подробности — [r303](audit-fixes-r303.ru.md).
+
+Вместе проверяются `maintenanceJobs`, `legacyLogRuntime`, `logWriterRuntime`,
+package hardening/IPK и непосредственная карта выбора. Общий router fixture не
+изменён; запуск всех его потребителей не требуется. Linux-only проверки нельзя
+выдать за Windows-pass; синтаксис BusyBox не равнозначен injection-тестам под ним.

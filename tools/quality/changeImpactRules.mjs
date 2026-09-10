@@ -104,8 +104,19 @@ export const impactRules = Object.freeze([
     categories: ['backend', 'security', 'packaging'],
     checks: ['routerReadOnly'],
     risk: 'high',
-    directTests: Object.freeze(['legacyLogRuntime.test.mjs', 'logWriterRuntime.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']),
-    review: 'Проверить оба потребителя RAM-пути, права/lock, отказы UCI и наличие общей библиотеки в обеих редакциях; облачный транспорт — отдельная граница.',
+    directTests: Object.freeze(['legacyLogRuntime.test.mjs', 'logWriterRuntime.test.mjs', 'maintenanceJobs.test.mjs', 'maintenanceRotationRuntime.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']),
+    review: 'Проверить writer, API и ротацию RAM-пути, права/lock, отказы UCI и наличие общей библиотеки в обеих редакциях; облачный транспорт — отдельная граница.',
+  }),
+
+  Object.freeze({
+    id: 'journalMaintenance',
+    area: 'Фоновое обслуживание и ротация журнала',
+    pattern: /sheepfold-maintenance$/,
+    categories: ['backendFast', 'packaging'],
+    checks: ['routerReadOnly'],
+    risk: 'high',
+    directTests: Object.freeze(['maintenanceJobs.test.mjs', 'maintenanceRotationRuntime.test.mjs', 'legacyLogRuntime.test.mjs', 'logWriterRuntime.test.mjs', 'packageHardeningRuntime.test.mjs']),
+    review: 'Ротация сохраняет исходный журнал при отказе подготовки и использует общий lock; не смешивать её с очисткой устройств и установкой обновлений.',
   }),
 
   Object.freeze({
