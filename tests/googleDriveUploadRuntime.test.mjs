@@ -5,6 +5,8 @@
  * В этом файле также проверяются обмен OAuth и привязанный к реквизитам RAM-кэш.
  * Дополнительно: поиск выбирает только однозначный ID, ошибка не равна отсутствию;
  * URL и права кэша проверяются по записанному следу, не по grep исходников.
+ * r307: кэш папок связан с реквизитами/root; HTTP-модель меняет UCI в точных
+ * точках запроса и фиксирует, были ли дальнейшие запись/удаление исходника.
  * Подмена источника повторяет те же assertions на предыдущей версии.
  */
 import assert from 'node:assert/strict';
@@ -23,7 +25,18 @@ const payload = 'synthetic archive payload\n';
 const payloadBytes = Buffer.byteLength(payload);
 function fixture(t, options = {}) {
   const parent = join(repo, '.build', 'gdrive-fixtures'); mkdirSync(parent, { recursive: true });
-  const root = mkdtempSync(join(parent, 'case-')); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const root = mkdtempSync(join(parent, 'case-')); t.after(() => {
+    // Экспорт включается явно только для синтетического fixture, не production.
+    const evidence = process.env.SHEEPFOLD_GDRIVE_EVIDENCE_DIR;
+    if (evidence && existsSync(traceFile)) {
+      mkdirSync(evidence, { recursive: true });
+      const name = createHash('sha256').update(t.name).digest('hex').slice(0,16);
+      writeFileSync(join(evidence, `${name}.json`), JSON.stringify({ scenario:t.name,
+        trace:readFileSync(traceFile,'utf8').trim().split('\n').filter(Boolean).map((line)=>JSON.parse(line)),
+        archiveExists:existsSync(archive) }, null, 2)+'\n');
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
   const bin = join(root, 'bin'), ram = join(root, 'ram'), config = join(root, 'config');
   const archiveDir = join(ram, '.private', 'archive');
   for (const p of [bin, ram, config, archiveDir]) mkdirSync(p, { recursive: true });
@@ -40,6 +53,11 @@ function fixture(t, options = {}) {
   const creds = { ...defaults, ...options.credentials };
   const authKey = (values) => createHash('sha256').update(['client_id','client_secret','refresh_token']
     .map((key) => `${Buffer.byteLength(values[key])}:${values[key]}`).join('')).digest('hex');
+  const folderKey = (values) => {
+    const name=(values.root_folder ?? '/sheepfold').replace(/^\//,'').replace(/\/$/,'') || 'sheepfold';
+    return createHash('sha256').update('gdrive-folders-v1\n'+['client_id','client_secret','refresh_token','root_folder']
+      .map((key)=>{ const value=key==='root_folder'?name:(values[key]??''); return `${Buffer.byteLength(value)}:${value}`; }).join('')).digest('hex');
+  };
   const cacheFile = join(ram, '.gdrive-token.json');
   if (!options.noTokenCache) writeFileSync(cacheFile, JSON.stringify({ access_token:'synthetic-token', issued_at:1800000000,
     expires_at:1800003600, cache_key:authKey(creds) })+'\n');
@@ -121,6 +139,11 @@ if kind in ('upload','folderCreate'):
   p=pathlib.Path(data[1:]); event['bytes']=p.read_bytes().hex(); event['mode']=stat.S_IMODE(p.stat().st_mode); event['parentMode']=stat.S_IMODE(p.parent.stat().st_mode)
 if kind=='metadata' and opts.get('removeJshnAtMetadata'): pathlib.Path(opts['jshnFile']).unlink()
 if kind=='metadata' and opts.get('changeSource'): pathlib.Path(opts['archive']).write_text('concurrent data\\n')
+if opts.get('changeContextAt')==kind:
+ opts['credentials'].update(opts.get('contextChange',{'refresh_token':'changed-during-drive'}))
+ opts['changeContextAt']=None
+ pathlib.Path(os.environ['GDRIVE_OPTIONS']).write_text(json.dumps(opts))
+ event['contextChanged']=True
 with open(trace,'a') as f: f.write(json.dumps(event)+'\\n')
 out=arg('-o')
 if out:
@@ -168,7 +191,7 @@ except (ValueError,KeyError,IndexError,AssertionError,TypeError): sys.exit(1)
     return spawnSync('sh',[path(join(bin,'function-run')),name,...args],{cwd:repo,
       env:{...process.env,PATH:`${bin}:${process.env.PATH}`,GDRIVE_OPTIONS:path(settings),GDRIVE_TRACE:path(traceFile)},encoding:'utf8',timeout:20000});
   };
-  return { root, bin, ram, archive, path, put, run, call, fault, cacheFile, authKey, creds,
+  return { root, bin, ram, archive, path, put, run, call, fault, cacheFile, authKey, folderKey, creds,
     update: (changes) => writeFileSync(settings, JSON.stringify({...JSON.parse(readFileSync(settings,'utf8')), ...changes})), trace: () => readFileSync(traceFile,'utf8').trim().split('\n').filter(Boolean).map((s) => JSON.parse(s)),
     leftovers: () => readdirSync(ram).filter((s) => /^\.gdrive-(?:upload|multipart|create-response)/.test(s)) };
 }
@@ -545,7 +568,7 @@ describe('Google Drive lookup supplemental boundaries',()=>{
     assert.ok(f.trace().find((v)=>v.kind==='folderLookup').query.q[0].startsWith("name='sheepfold'"));
   });
   it('reads a formatted complete folder cache without doing HTTP', (t)=>{
-    const f=fixture(t); writeFileSync(join(f.ram,'.gdrive-folders.json'),JSON.stringify({root:'root1',logs:'logs1',backups:'backups1',root_name:'sheepfold'},null,2));
+    const f=fixture(t); writeFileSync(join(f.ram,'.gdrive-folders.json'),JSON.stringify({root:'root1',logs:'logs1',backups:'backups1',root_name:'sheepfold',context_key:f.folderKey(f.creds)},null,2));
     const r=f.call('folder_id_from_cache',['logs']); succeeded(r); assert.equal(r.stdout,'logs1'); assert.deepEqual(f.trace(),[]);
   });
   for(const cache of ['{"root":"root1","logs":"logs1","backups":"backups1","root_name":"sheepfold"',
@@ -558,5 +581,104 @@ describe('Google Drive lookup supplemental boundaries',()=>{
   it('does not treat an oversized search response as permission to create', (t)=>{
     const f=fixture(t,{lookupBody:JSON.stringify({files:[],padding:'x'.repeat(65536)})}); failed(f.run());
     assert.ok(f.trace().some((v)=>v.kind==='lookup')); assert.ok(!f.trace().some((v)=>v.kind==='upload')); assert.ok(existsSync(f.archive));
+  });
+});
+
+
+/* r307: public upload commands and real cache reader; all credentials are synthetic.
+ * The model mutates UCI exactly when a HTTP response is delivered. Assertions check
+ * the reached stage, later HTTP calls and preservation of cache/source, not text.
+ * This does not prove atomic UCI, Drive transactions or live account permissions.
+ */
+describe('Google Drive folder context',()=>{
+  const folderFile=(f)=>join(f.ram,'.gdrive-folders.json');
+  const oldRecord={root:'oldRoot',logs:'oldLogs',backups:'oldBackups',root_name:'sheepfold'};
+  const boundRecord=(f)=>({...oldRecord,context_key:f.folderKey(f.creds)});
+  for(const field of ['client_id','client_secret','refresh_token','root_folder']) {
+    it(`does not reuse cached folders after ${field} changes`,(t)=>{
+      const f=fixture(t); succeeded(f.call('cache_folder_ids'));
+      f.update({credentials:{...f.creds,[field]:field==='root_folder'?'/Other family':'other-synthetic'},folderLookupBody:'{"files":[{"id":"newFolder"}]}'});
+      const r=f.call('folder_id_from_cache',['logs']); succeeded(r); assert.equal(r.stdout,'newFolder');
+      assert.ok(f.trace().some((v)=>v.kind==='folderLookup' && v.query.q[0].includes(field==='root_folder'?"name='Other family'":"name='logs'")));
+      assert.notEqual(JSON.parse(readFileSync(folderFile(f),'utf8')).context_key,f.folderKey(f.creds));
+    });
+  }
+  it('migrates a complete legacy cache by lookup instead of guessing its owner',(t)=>{
+    const f=fixture(t); writeFileSync(folderFile(f),JSON.stringify(oldRecord));
+    const r=f.call('folder_id_from_cache',['logs']); succeeded(r); assert.equal(r.stdout,'folder1');
+    assert.equal(f.trace().filter((v)=>v.kind==='folderLookup').length,3);
+    assert.equal(JSON.parse(readFileSync(folderFile(f),'utf8')).context_key,f.folderKey(f.creds));
+  });
+  it('does not fall back to obsolete ids when the replacement search fails',(t)=>{
+    const f=fixture(t,{folderLookupHttp:500}); const before=JSON.stringify(oldRecord); writeFileSync(folderFile(f),before);
+    const r=f.call('folder_id_from_cache',['logs']); failed(r); assert.equal(r.stdout,'');
+    assert.ok(f.trace().some((v)=>v.kind==='folderLookup')); assert.equal(readFileSync(folderFile(f),'utf8'),before);
+    assert.ok(!f.trace().some((v)=>v.kind==='upload'||v.kind==='folderCreate'));
+  });
+  it('reuses a matching cache after an unrelated quota change',(t)=>{
+    const f=fixture(t); writeFileSync(folderFile(f),JSON.stringify(boundRecord(f)));
+    f.update({credentials:{...f.creds,quota_mb:'250'}});
+    const r=f.call('folder_id_from_cache',['backups']); succeeded(r); assert.equal(r.stdout,'oldBackups'); assert.deepEqual(f.trace(),[]);
+  });
+  it('normalizes root slashes without invalidating the same logical destination',(t)=>{
+    const f=fixture(t); writeFileSync(folderFile(f),JSON.stringify(boundRecord(f)));
+    f.update({credentials:{...f.creds,root_folder:'/sheepfold/'}});
+    const r=f.call('folder_id_from_cache',['logs']); succeeded(r); assert.equal(r.stdout,'oldLogs'); assert.deepEqual(f.trace(),[]);
+  });
+  it('does not accept a root name inconsistent with the stored context',(t)=>{
+    const f=fixture(t); writeFileSync(folderFile(f),JSON.stringify({...boundRecord(f),root_name:'anotherRoot'}));
+    const r=f.call('folder_id_from_cache',['logs']); succeeded(r); assert.equal(r.stdout,'folder1');
+    assert.ok(f.trace().some((v)=>v.kind==='folderLookup'));
+  });
+  for(const context_key of [null,42,'not-a-digest']) it(`rejects a malformed context key ${JSON.stringify(context_key)}`,(t)=>{
+    const f=fixture(t); const before=JSON.stringify({...oldRecord,context_key}); writeFileSync(folderFile(f),before);
+    const r=f.call('folder_id_from_cache',['logs']); failed(r); assert.equal(r.stdout,''); assert.deepEqual(f.trace(),[]);
+    assert.equal(readFileSync(folderFile(f),'utf8'),before);
+  });
+  it('stores a domain-separated key but no credential values in the folder cache',(t)=>{
+    const f=fixture(t,{credentials:{client_id:'unique-client',client_secret:'unique-secret',refresh_token:'unique-refresh'}});
+    succeeded(f.call('cache_folder_ids')); const text=readFileSync(folderFile(f),'utf8'),record=JSON.parse(text);
+    assert.equal(record.context_key,f.folderKey(f.creds)); assert.notEqual(record.context_key,f.authKey(f.creds));
+    for(const key of ['client_id','client_secret','refresh_token']) assert.ok(!text.includes(f.creds[key]));
+  });
+  for(const option of ['root_folder','refresh_token']) it(`does not use a cached id after failed ${option} read`,(t)=>{
+    const f=fixture(t); writeFileSync(folderFile(f),JSON.stringify(boundRecord(f)));
+    f.fault('uci',`[ "$*" = "-q get sheepfold.gdrive.${option}" ]`,'printf partial; exit 7');
+    const r=f.call('folder_id_from_cache',['logs']); failed(r); assert.equal(r.stdout,'');
+    assert.ok(f.trace().some((v)=>v.kind==='uci-fault')); assert.ok(!f.trace().some((v)=>v.kind==='folderLookup'));
+  });
+  it('does not accept a digest printed by a failed hash process',(t)=>{
+    const f=fixture(t); writeFileSync(folderFile(f),JSON.stringify(boundRecord(f)));
+    f.fault('sha256sum',':',`printf '%s  identity\n' '${f.folderKey(f.creds)}'; exit 7`);
+    const r=f.call('folder_id_from_cache',['logs']); failed(r); assert.equal(r.stdout,'');
+    assert.ok(f.trace().some((v)=>v.kind==='sha256sum-fault')); assert.ok(!f.trace().some((v)=>v.kind==='folderLookup'));
+  });
+  for(const field of ['refresh_token','root_folder']) for(const stage of ['folderLookup','folderCreate','lookup','upload','metadata']) {
+    it(`stops the current upload when ${field} changes at ${stage}`,(t)=>{
+      const f=fixture(t,{emptyFolders:stage==='folderCreate',changeContextAt:stage,
+        contextChange:{[field]:field==='root_folder'?'/New destination':'new-account'},tokenBody:'{"access_token":"new-account-token","expires_in":3600,"token_type":"Bearer"}'});
+      const before=JSON.stringify(boundRecord(f)); writeFileSync(folderFile(f),before);
+      const r=f.run(); const trace=f.trace(),index=trace.findIndex((v)=>v.contextChanged);
+      assert.ok(index>=0,'deterministic context change was not reached');
+      failed(r); assert.ok(existsSync(f.archive),'archive removed after context switch');
+      assert.deepEqual(trace.slice(index+1).filter((v)=>!v.kind.endsWith('-fault')),[],'continued HTTP after noticed context change');
+      if(stage==='folderLookup'||stage==='folderCreate') assert.equal(readFileSync(folderFile(f),'utf8'),before);
+    });
+  }
+  it('does not create a new file after context changes in an empty lookup',(t)=>{
+    const f=fixture(t,{newFile:true,changeContextAt:'lookup',contextChange:{root_folder:'/Changed'}});
+    const r=f.run(); assert.ok(f.trace().some((v)=>v.contextChanged)); failed(r);
+    assert.ok(!f.trace().some((v)=>v.kind==='upload')); assert.ok(existsSync(f.archive));
+  });
+  it('stops push-events at a detected context change without deleting the live journal',(t)=>{
+    const f=fixture(t,{changeContextAt:'lookup',contextChange:{root_folder:'/Changed'}}); rmSync(f.archive);
+    const events=join(f.ram,'events.log'); writeFileSync(events,payload);
+    const r=f.run('push-events'); assert.ok(f.trace().some((v)=>v.contextChanged)); failed(r);
+    assert.equal(readFileSync(events,'utf8'),payload); assert.ok(!f.trace().some((v)=>v.kind==='upload'));
+  });
+  it('invalidates the next read after a concurrent publisher replaced the cache identity',(t)=>{
+    const f=fixture(t); writeFileSync(folderFile(f),JSON.stringify({...boundRecord(f),context_key:'a'.repeat(64)}));
+    const r=f.call('folder_id_from_cache',['logs']); succeeded(r); assert.equal(r.stdout,'folder1');
+    assert.ok(f.trace().some((v)=>v.kind==='folderLookup'));
   });
 });

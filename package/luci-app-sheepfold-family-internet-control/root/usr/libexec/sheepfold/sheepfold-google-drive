@@ -13,6 +13,10 @@ BACKUP_STAGING="/tmp/sheepfold/.gdrive-backup-staging"
 SYNC_STATUS_FILE="/tmp/sheepfold/.gdrive-sync-status.json"
 TOKEN_CACHE="/tmp/sheepfold/.gdrive-token.json"
 FOLDER_CACHE="/tmp/sheepfold/.gdrive-folders.json"
+# Контекст задаётся самим процессом, а не доверяется переменным окружения.
+DRIVE_CONTEXT_KEY=''
+DRIVE_CONTEXT_ROOT=''
+DRIVE_CONTEXT_SNAPSHOT=''
 
 uci_get() {
 	uci -q get "sheepfold.gdrive.$1" 2>/dev/null || printf '%s' "${2:-}"
@@ -109,6 +113,50 @@ drive_auth_unchanged() {
 	local current
 	current="$(uci -q show sheepfold.gdrive)" || return 1
 	[ "$current" = "$auth_snapshot" ]
+}
+
+# Ключ папок отличается от ключа токена: место загрузки определяется также
+# нормализованным root_folder. Секреты остаются в закрытом временном файле.
+drive_folder_context_key() (
+	umask 077
+	LC_ALL=C
+	export LC_ALL
+	work="$(drive_workdir)" || exit 1
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	{
+		printf 'gdrive-folders-v1\n' || exit 1
+		for value in "$@"; do
+			printf '%s:%s' "${#value}" "$value" || exit 1
+		done
+	} >"$work/identity" || exit 1
+	chmod 600 "$work/identity" || exit 1
+	drive_auth_key "$work/identity"
+)
+
+# Вложенные вызовы наследуют один снимок, а не начинают новую операцию после
+# замеченной смены аккаунта. Это обнаружение изменений, не UCI-транзакция.
+drive_context_check() {
+	local current
+	[ -n "$DRIVE_CONTEXT_KEY" ] || return 0
+	current="$(uci -q show sheepfold.gdrive)" || return 1
+	[ "$current" = "$DRIVE_CONTEXT_SNAPSHOT" ]
+}
+
+drive_context_begin() {
+	local auth_snapshot client_id client_secret refresh_token root_name context_key
+	if [ -n "$DRIVE_CONTEXT_KEY" ]; then
+		drive_context_check
+		return $?
+	fi
+	drive_auth_read || return 1
+	root_name="$(normalize_root_folder)" || return 1
+	drive_auth_unchanged || return 1
+	context_key="$(drive_folder_context_key "$client_id" "$client_secret" "$refresh_token" "$root_name")" || return 1
+	drive_auth_unchanged || return 1
+	DRIVE_CONTEXT_SNAPSHOT="$auth_snapshot"
+	DRIVE_CONTEXT_ROOT="$root_name"
+	DRIVE_CONTEXT_KEY="$context_key"
 }
 
 # Нулевые/нечисловые часы не подтверждают срок. Ограничение разрядности
@@ -214,6 +262,7 @@ drive_cached_token() (
 )
 
 access_token() (
+	drive_context_check || exit 1
 	umask 077
 	LC_ALL=C
 	export LC_ALL
@@ -235,6 +284,7 @@ access_token() (
 		cache_data="$(cat "$TOKEN_CACHE")" || exit 1
 		if cached_token="$(drive_cached_token "$cache_data" "$cache_key" "$now")"; then
 			drive_auth_unchanged || exit 1
+			drive_context_check || exit 1
 			printf '%s' "$cached_token"
 			exit 0
 		fi
@@ -244,11 +294,13 @@ access_token() (
 	printf '%s' "$client_secret" >"$work/client-secret" || exit 1
 	printf '%s' "$refresh_token" >"$work/refresh-token" || exit 1
 	chmod 600 "$work/identity" "$work/client-id" "$work/client-secret" "$work/refresh-token" || exit 1
+	drive_context_check || exit 1
 	code="$(curl -sS -m 30 -X POST -o "$work/response" -w '%{http_code}' "$TOKEN_URL" \
 		--data-urlencode "client_id@$work/client-id" \
 		--data-urlencode "client_secret@$work/client-secret" \
 		--data-urlencode "refresh_token@$work/refresh-token" \
 		--data 'grant_type=refresh_token')" || exit 1
+	drive_context_check || exit 1
 	[ "$code" = 200 ] || exit 1
 	response_bytes="$(drive_local_bytes "$work/response")" || exit 1
 	[ "$response_bytes" -le 65536 ] || exit 1
@@ -273,6 +325,7 @@ access_token() (
 		# Отказ не обнуляет предыдущий кэш и не публикует частичный JSON.
 		mv "$work/cache" "$TOKEN_CACHE" || exit 1
 	fi
+	drive_context_check || exit 1
 	printf '%s' "$new_token"
 )
 
@@ -283,6 +336,7 @@ drive_request() {
 	extra="${3:-}"
 
 	token="$(access_token)" || return 1
+	drive_context_check || return 1
 	# shellcheck disable=SC2086
 	curl -sS -m 120 -H "Authorization: Bearer $token" -X "$method" $extra "$url"
 }
@@ -352,9 +406,11 @@ remote_file_metadata() (
 	trap 'rm -rf "$work"' EXIT
 	trap 'exit 1' HUP INT TERM
 	token="$(access_token)" || exit 1
+	drive_context_check || exit 1
 	code="$(curl -sS -m 60 -o "$work/metadata" -w '%{http_code}' \
 		-H "Authorization: Bearer $token" \
 		"$DRIVE_API/files/$file_id?fields=id,size")" || exit 1
+	drive_context_check || exit 1
 	[ "$code" = 200 ] || exit 1
 	response="$(cat "$work/metadata")" || exit 1
 	drive_metadata_values "$response" "$file_id"
@@ -365,11 +421,13 @@ drive_upload_media() {
 	file_id="$1"
 	local_path="$2"
 	token="$(access_token)" || return 1
+	drive_context_check || return 1
 	code="$(curl -sS -m 120 -o /dev/null -w '%{http_code}' -X PATCH \
 		-H "Authorization: Bearer $token" \
 		-H "Content-Type: application/octet-stream" \
 		--data-binary "@$local_path" \
 		"$DRIVE_UPLOAD/files/$file_id?uploadType=media")" || return 1
+	drive_context_check || return 1
 	case "$code" in 200|201|204) printf '%s' "$code" ;; *) return 1 ;; esac
 }
 
@@ -394,11 +452,13 @@ drive_create_file() (
 		printf '\r\n--%s--\r\n' "$boundary" || exit 1
 	} >"$work/multipart" || exit 1
 	chmod 600 "$work/multipart" || exit 1
+	drive_context_check || exit 1
 	code="$(curl -sS -m 120 -o "$work/response" -w '%{http_code}' -X POST \
 		-H "Authorization: Bearer $token" \
 		-H "Content-Type: multipart/related; boundary=$boundary" \
 		--data-binary "@$work/multipart" \
 		"$DRIVE_UPLOAD/files?uploadType=multipart&fields=id,size")" || exit 1
+	drive_context_check || exit 1
 	case "$code" in 200|201) ;; *) exit 1 ;; esac
 	response="$(cat "$work/response")" || exit 1
 	drive_metadata_values "$response"
@@ -483,11 +543,13 @@ drive_find_id() (
 	printf "name='%s' and %s and '%s' in parents and trashed=false" \
 		"$literal" "$mime_test" "$parent_id" >"$work/query" || exit 1
 	token="$(access_token)" || exit 1
+	drive_context_check || exit 1
 	code="$(curl -sS -m 60 --get -o "$work/search" -w '%{http_code}' \
 		-H "Authorization: Bearer $token" \
 		--data-urlencode "q@$work/query" \
 		--data-urlencode 'fields=files(id),nextPageToken,incompleteSearch' \
 		--data-urlencode 'pageSize=2' "$DRIVE_API/files")" || exit 1
+	drive_context_check || exit 1
 	[ "$code" = 200 ] || exit 1
 	bytes="$(drive_local_bytes "$work/search")" || exit 1
 	[ "${#bytes}" -le 5 ] && [ "$bytes" -le 65536 ] || exit 1
@@ -513,9 +575,11 @@ create_folder_id() (
 		"$name_json" "$parent_id" >"$work/folder-metadata" || exit 1
 	chmod 600 "$work/folder-metadata" || exit 1
 	token="$(access_token)" || exit 1
+	drive_context_check || exit 1
 	code="$(curl -sS -m 60 -X POST -o "$work/response" -w '%{http_code}' \
 		-H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
 		--data-binary "@$work/folder-metadata" "$DRIVE_API/files?fields=id")" || exit 1
+	drive_context_check || exit 1
 	case "$code" in 200|201) ;; *) exit 1 ;; esac
 	response="$(cat "$work/response")" || exit 1
 	drive_metadata_values "$response"
@@ -536,6 +600,7 @@ ensure_folder_id() {
 }
 
 cache_folder_ids() (
+	drive_context_begin || exit 1
 	# Старый кэш остаётся до полной подготовки нового. Ссылки и каталоги
 	# по имени кэша не должны перенаправлять запись в другой объект.
 	[ ! -L "$FOLDER_CACHE" ] || exit 1
@@ -544,17 +609,19 @@ cache_folder_ids() (
 	trap 'rm -rf "$work"' EXIT
 	trap 'exit 1' HUP INT TERM
 	umask 077
-	root_name="$(normalize_root_folder)" || exit 1
+	root_name="$DRIVE_CONTEXT_ROOT"
 	root_id="$(ensure_folder_id root "$root_name")" || exit 1
 	logs_id="$(ensure_folder_id "$root_id" logs)" || exit 1
 	backups_id="$(ensure_folder_id "$root_id" backups)" || exit 1
 	name_json="$(json_escape "$root_name")" || exit 1
-	printf '{"root":"%s","logs":"%s","backups":"%s","root_name":"%s"}\n' \
-		"$root_id" "$logs_id" "$backups_id" "$name_json" >"$work/folders" || exit 1
+	printf '{"root":"%s","logs":"%s","backups":"%s","root_name":"%s","context_key":"%s"}\n' \
+		"$root_id" "$logs_id" "$backups_id" "$name_json" "$DRIVE_CONTEXT_KEY" >"$work/folders" || exit 1
 	chmod 600 "$work/folders" || exit 1
 	[ ! -L "$FOLDER_CACHE" ] || exit 1
 	[ ! -e "$FOLDER_CACHE" ] || [ -f "$FOLDER_CACHE" ] || exit 1
+	drive_context_check || exit 1
 	mv "$work/folders" "$FOLDER_CACHE" || exit 1
+	drive_context_check
 )
 
 drive_cached_folder() (
@@ -571,20 +638,42 @@ drive_cached_folder() (
 	done
 	json_get_type value_type root_name || exit 1
 	[ "$value_type" = string ] || exit 1
+	json_get_var root_name root_name || exit 1
+	# 4 означает старый/чужой контекст, не повреждённый JSON. При отказе
+	# повторного поиска такой кэш нельзя использовать как запасной.
+	if ! json_get_type value_type context_key; then exit 4; fi
+	[ "$value_type" = string ] || exit 1
+	json_get_var stored_key context_key || exit 1
+	[ "${#stored_key}" = 64 ] || exit 1
+	case "$stored_key" in *[!a-f0-9]*) exit 1 ;; esac
+	[ "$stored_key" = "$3" ] && [ "$root_name" = "$4" ] || exit 4
 	json_get_var folder_id "$2" || exit 1
 	printf '%s' "$folder_id"
 )
 
-folder_id_from_cache() {
-	local key response
+folder_id_from_cache() (
 	key="$1"
-	case "$key" in root|logs|backups) ;; *) return 1 ;; esac
-	[ ! -L "$FOLDER_CACHE" ] || return 1
-	if [ ! -e "$FOLDER_CACHE" ]; then cache_folder_ids || return 1; fi
-	[ ! -L "$FOLDER_CACHE" ] && [ -f "$FOLDER_CACHE" ] || return 1
-	response="$(cat "$FOLDER_CACHE")" || return 1
-	drive_cached_folder "$response" "$key"
-}
+	case "$key" in root|logs|backups) ;; *) exit 1 ;; esac
+	drive_context_begin || exit 1
+	[ ! -L "$FOLDER_CACHE" ] || exit 1
+	if [ ! -e "$FOLDER_CACHE" ]; then cache_folder_ids || exit 1; fi
+	[ ! -L "$FOLDER_CACHE" ] && [ -f "$FOLDER_CACHE" ] || exit 1
+	response="$(cat "$FOLDER_CACHE")" || exit 1
+	if folder_id="$(drive_cached_folder "$response" "$key" "$DRIVE_CONTEXT_KEY" "$DRIVE_CONTEXT_ROOT")"; then
+		:
+	else
+		result=$?
+		[ "$result" = 4 ] || exit 1
+		cache_folder_ids || exit 1
+		# Другой publisher может заменить файл: проверяем реально прочитанный
+		# результат, не считаем собственный прежний rename доказательством.
+		[ ! -L "$FOLDER_CACHE" ] && [ -f "$FOLDER_CACHE" ] || exit 1
+		response="$(cat "$FOLDER_CACHE")" || exit 1
+		folder_id="$(drive_cached_folder "$response" "$key" "$DRIVE_CONTEXT_KEY" "$DRIVE_CONTEXT_ROOT")" || exit 1
+	fi
+	drive_context_check || exit 1
+	printf '%s' "$folder_id"
+)
 
 remote_name_allowed() {
 	local name
@@ -766,6 +855,7 @@ upload_and_verify() (
 		printf '{"ok":false,"error":"source_changed"}\n'
 		exit 1
 	fi
+	drive_context_check || exit 1
 	printf '%s\n' "$verify_json"
 )
 
@@ -1013,9 +1103,11 @@ drive_delete_file() {
 	file_id="$1"
 
 	token="$(access_token)" || return 1
+	drive_context_check || return 1
 	code="$(curl -sS -m 60 -o /dev/null -w '%{http_code}' -X DELETE \
 		-H "Authorization: Bearer $token" \
 		"$DRIVE_API/files/$file_id" 2>/dev/null || printf 000)"
+	drive_context_check || return 1
 	case "$code" in
 		200|204) return 0 ;;
 	esac
@@ -1039,12 +1131,13 @@ prune_remote_logs() {
 	done
 }
 
-cmd_push_events() {
+cmd_push_events() (
 	local logs_id verify_json
 
 	[ "$(global_get log_storage ram)" = "google_drive" ] || return 0
 	[ -f "$EVENTS_LOG" ] || return 0
 	require_tooling || return 1
+	drive_context_begin || return 1
 
 	cache_folder_ids || return 1
 	logs_id="$(folder_id_from_cache logs)" || return 1
@@ -1055,16 +1148,18 @@ cmd_push_events() {
 		return 1
 	}
 
+	drive_context_check || return 1
 	write_sync_status push-events true "events.log uploaded"
 	printf '%s\n' "$verify_json"
-}
+)
 
-cmd_archive_push() {
+cmd_archive_push() (
 	local logs_id backups_id quota_bytes pushed errors archive events_copy backup_file
 	[ "$(global_get log_storage ram)" = "google_drive" ] || return 0
 	[ "$(uci_get authorized '0')" = "1" ] || cmd_status >/dev/null 2>&1 || true
 	[ "$(uci_get authorized '0')" = "1" ] || return 0
 	require_tooling || return 1
+	drive_context_begin || return 1
 
 	cache_folder_ids || return 1
 	logs_id="$(folder_id_from_cache logs)" || return 1
@@ -1077,9 +1172,11 @@ cmd_archive_push() {
 	for archive in "$RAM_ARCHIVE_DIR"/*.tar.gz "$RAM_ARCHIVE_DIR"/*.tar; do
 		[ -f "$archive" ] || continue
 		if upload_and_verify "$logs_id" "$archive" "$(basename "$archive")" >/dev/null 2>&1; then
+			drive_context_check || return 1
 			rm -f "$archive"
 			pushed=$((pushed + 1))
 		else
+			drive_context_check || return 1
 			errors=$((errors + 1))
 		fi
 	done
@@ -1089,8 +1186,10 @@ cmd_archive_push() {
 		mkdir -p "$BACKUP_STAGING"
 		cp "$EVENTS_LOG" "$events_copy"
 		if upload_and_verify "$logs_id" "$events_copy" "$(basename "$events_copy")" >/dev/null 2>&1; then
+			drive_context_check || return 1
 			pushed=$((pushed + 1))
 		else
+			drive_context_check || return 1
 			errors=$((errors + 1))
 		fi
 		rm -f "$events_copy"
@@ -1099,14 +1198,18 @@ cmd_archive_push() {
 	backup_file="$(create_config_backup 2>/dev/null || true)"
 	if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
 		if upload_and_verify "$backups_id" "$backup_file" "$(basename "$backup_file")" >/dev/null 2>&1; then
+			drive_context_check || return 1
 			pushed=$((pushed + 1))
 		else
+			drive_context_check || return 1
 			errors=$((errors + 1))
 		fi
 		rm -f "$backup_file"
 	fi
 
+	drive_context_check || return 1
 	prune_remote_logs "$quota_bytes" || true
+	drive_context_check || return 1
 
 	if [ "$errors" -gt 0 ]; then
 		write_sync_status archive-push false "completed with errors"
@@ -1116,7 +1219,7 @@ cmd_archive_push() {
 
 	write_sync_status archive-push true "archive push completed"
 	printf '{"ok":true,"pushed":%d,"errors":0}\n' "$pushed"
-}
+)
 
 cmd_sync_status() {
 	if [ -r "$SYNC_STATUS_FILE" ]; then

@@ -1,5 +1,15 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-10, **r307**, based on `694355b` (r306).
+B91–B92 bind folder-cache reads to verified credentials and the normalized root,
+and abort the supported upload paths on detected in-flight configuration changes.
+See the [92-card register](bug-register.ru.md) and [r307 report](audit-fixes-r307.ru.md).
+No live account identity or atomic UCI/HTTP transaction is claimed. Quotas, remote
+folder moves, concurrent publishers, list/download/restore and live tests remain R14.
+Android, access policy, workflow and runner code are unchanged.
+
+Historical continuation:
+
 Focused continuation: 2026-09-10, **r306**, based on `9f3a38c` (r305).
 B88–B90 distinguish a verified empty Drive search from errors/ambiguity, encode
 query literals and URL parameters separately, and publish/read a checked private

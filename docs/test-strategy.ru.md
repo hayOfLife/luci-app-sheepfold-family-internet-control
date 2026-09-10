@@ -741,3 +741,28 @@ node --test --test-name-pattern 'Google Drive lookup' tests/googleDriveUploadRun
 сценариям на r305, не к числу отдельных дефектов. Нативный jshn, облачный аккаунт,
 межпроцессный search-then-create и привязка folder cache к аккаунту этим не проверены.
 Полный порядок, причины выбора и ограничения — [отчёт r306](audit-fixes-r306.ru.md).
+
+
+## Контекст папок и активной загрузки Drive: r307
+
+Группа `Google Drive folder context` в существующем `googleDriveUploadRuntime`
+исполняет настоящее чтение кэша и публичные upload-команды с моделями UCI/HTTP/jshn.
+Смена реквизитов/root в точке ответа подтверждается trace-маркером до проверки
+ожидаемого отказа. Проверяются дальнейшие запросы, файл кэша и исходный архив.
+29 сценариев дополняют 112 прежних, не заменяют их. Общий fixture не вынесен в
+новую зависимость, категории/workflow/runner не изменены.
+
+Из корня проекта, Node.js + Python 3 + POSIX sh и файловые утилиты:
+
+```sh
+node --test --test-name-pattern 'Google Drive folder context' tests/googleDriveUploadRuntime.test.mjs
+```
+
+Ожидается exit 0, 29 успешных сценариев; изменяются только `.build/gdrive-fixtures`,
+затем собственные файлы удаляются. `SHEEPFOLD_GDRIVE_TEST_SOURCE` позволяет повторить
+проверки с сохранённым оригинальным helper; r306 ожидаемо даёт exit 1 (27/2).
+`SHEEPFOLD_GDRIVE_EVIDENCE_DIR` включает явный экспорт синтетических HTTP-трасс для
+разбора результатов, не чтение production-секретов. Ошибка модели/неподготовленный
+PATH не исправляется ослаблением production. Успех не доказывает native libubox,
+Google ACL, отсутствие гонок после check, remote rollback и фактическую установку.
+Соседние проверки и упаковка — [отчёт r307](audit-fixes-r307.ru.md).
