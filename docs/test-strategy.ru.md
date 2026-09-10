@@ -777,3 +777,29 @@ DELETE меняет только модель и оставляет HTTP-тра�
 pruner. Команды, зависимости, результаты и границы — [отчёт r308](audit-fixes-r308.ru.md).
 Не использовать настоящий облачный аккаунт для этих регрессий и не считать
 проверку синтаксиса BusyBox исполнением native jshn.
+
+
+## Google Drive: самостоятельное скачивание r309
+
+Группа `Google Drive download safety` в `googleDriveUploadRuntime.test.mjs`
+исполняет настоящий CLI с моделью media/metadata, UCI и jshn. Модель записывает
+переданные байты и права staging; отказ файловой утилиты обязан оставить trace.
+Проверяются сохранность прежней копии, ошибки HTTP/поиска, частичная передача,
+ID/size, контекст, локальные пути, аргументы, binary/NUL и пустое содержимое.
+
+```sh
+node --test --test-name-pattern='Google Drive download safety' tests/googleDriveUploadRuntime.test.mjs
+```
+
+Полный product suite не нужен: прямые потребители изменённого fixture — остальные
+сценарии этого же файла; ближайшие соседи — logStorage, logWriterRuntime,
+packageHardeningRuntime и testIpkPermissions. Команды выборочного runner и реальные
+результаты находятся в [отчёте r309](audit-fixes-r309.ru.md).
+
+Для baseline используется SHEEPFOLD_GDRIVE_TEST_SOURCE с каталогом неизменённого
+скрипта r308. Второй, явно маркированный decl-only добавляет только local в
+cmd_download: он нужен, чтобы ранний B95 не скрывал поздние B96/B97. Не считать его
+неизменённой r308. FIFO из предварительного запуска исключён из окончательного
+контура из-за блокирующей записи моделью; права сравниваются по access-битам, без
+ошибочного приравнивания inherited setgid к доступу группы. Нативный Google/UCI/jshn,
+целевой curl и восстановление конфигурации этим стендом не проверяются.

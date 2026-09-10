@@ -14,6 +14,7 @@ SYNC_STATUS_FILE="/tmp/sheepfold/.gdrive-sync-status.json"
 TOKEN_CACHE="/tmp/sheepfold/.gdrive-token.json"
 FOLDER_CACHE="/tmp/sheepfold/.gdrive-folders.json"
 # Контекст задаётся самим процессом, а не доверяется переменным окружения.
+DOWNLOAD_ROOT="/tmp"
 DRIVE_CONTEXT_KEY=''
 DRIVE_CONTEXT_ROOT=''
 DRIVE_CONTEXT_SNAPSHOT=''
@@ -1031,59 +1032,115 @@ cmd_list() {
 		"$(json_escape "/$root_name")" "$logs_json" "$backups_json"
 }
 
-cmd_download() {
+# Назначение download остаётся внутри /tmp. Проверяется каждый компонент:
+# совпадение префикса не закрывает '..', ссылку или каталог вместо файла.
+# Корень задаётся кодом, не окружением; тест переносит его в свой fixture.
+drive_download_path() {
+	local remaining part current
+	[ -n "$1" ] && [ "${#1}" -le 4096 ] || return 1
+	case "$1" in *[[:cntrl:]]*) return 1 ;; esac
+	case "$1" in "$DOWNLOAD_ROOT"/*) ;; *) return 1 ;; esac
+	[ -d "$DOWNLOAD_ROOT" ] && [ ! -L "$DOWNLOAD_ROOT" ] || return 1
+	remaining="${1#"$DOWNLOAD_ROOT"/}"
+	current="$DOWNLOAD_ROOT"
+	while :; do
+		part="${remaining%%/*}"
+		case "$part" in ''|.|..) return 1 ;; esac
+		current="$current/$part"
+		[ ! -L "$current" ] || return 1
+		if [ "$remaining" = "$part" ]; then
+			[ ! -e "$current" ] || [ -f "$current" ] || return 1
+			return 0
+		fi
+		[ ! -e "$current" ] || [ -d "$current" ] || return 1
+		remaining="${remaining#*/}"
+	done
+}
+
+drive_download_error() {
+	# Только фиксированные внутренние коды, без текста сервера и секретов.
+	printf '{"ok":false,"error":"%s"}\n' "$1"
+	return 1
+}
+
+cmd_download() (
+	# Изоляция сохраняет параметры caller и trap его резервной копии.
+	# Ошибки проверяются явно: функцию вызывают также внутри условия.
+	if [ "$#" != 2 ] || [ -z "${1:-}" ] || [ -z "${2:-}" ]; then
+		printf '{"ok":false,"error":"usage","hint":"download <remote> <local>"}\n'
+		exit 1
+	fi
 	remote_spec="$1"
 	local_path="$2"
-	folder_id filename file_id token code
-
-	require_tooling || return 1
-	[ -n "$remote_spec" ] && [ -n "$local_path" ] || {
-		printf '{"ok":false,"error":"usage","hint":"download <remote> <local>"}\n'
-		return 1
-	}
-
-	filename="$(resolve_remote_name "$remote_spec")"
-	remote_name_allowed "$filename" || {
-		printf '{"ok":false,"error":"path_not_allowed"}\n'
-		return 1
-	}
-
+	filename="$(resolve_remote_name "$remote_spec")" || exit 1
+	if ! remote_name_allowed "$filename" || [ -z "$filename" ] || [ "${#filename}" -gt 4096 ]; then
+		drive_download_error path_not_allowed; exit 1
+	fi
+	# Управляющие байты не являются поддерживаемым CLI-именем; не подменяем
+	# их пробелами при JSON-ответе и не меняем глобальный encoder ради download.
+	case "$filename" in *[[:cntrl:]]*) drive_download_error path_not_allowed; exit 1 ;; esac
+	drive_download_path "$local_path" || { drive_download_error local_path_not_allowed; exit 1; }
+	require_tooling || exit 1
+	drive_context_begin || { drive_download_error download_context_changed; exit 1; }
 	case "$remote_spec" in
-		logs/*) folder_id="$(folder_id_from_cache logs)" ;;
-		backups/*) folder_id="$(folder_id_from_cache backups)" ;;
-		*) folder_id="$(folder_id_from_cache backups)" ;;
+		logs/*) folder_key=logs ;;
+		*) folder_key=backups ;;
 	esac
+	folder_id="$(folder_id_from_cache "$folder_key")" || { drive_download_error remote_lookup_failed; exit 1; }
+	if file_id="$(find_file_in_folder "$folder_id" "$filename")"; then
+		:
+	else
+		result=$?
+		if [ "$result" = 4 ]; then drive_download_error remote_missing
+		else drive_download_error remote_lookup_failed; fi
+		exit 1
+	fi
+	before="$(remote_file_metadata "$file_id")" || { drive_download_error download_metadata_failed; exit 1; }
+	expected_bytes="${before#*	}"
+	token="$(access_token)" || { drive_download_error download_auth_failed; exit 1; }
+	drive_context_check || { drive_download_error download_context_changed; exit 1; }
 
-	file_id="$(find_file_in_folder "$folder_id" "$filename")" || {
-		printf '{"ok":false,"error":"remote_missing"}\n'
-		return 1
-	}
-
-	case "$local_path" in
-		/tmp/*) ;;
-		*)
-			printf '{"ok":false,"error":"local_path_not_allowed"}\n'
-			return 1
-			;;
-	esac
-
-	mkdir -p "${local_path%/*}" 2>/dev/null || true
-	token="$(access_token)" || return 1
-	code="$(curl -sS -m 120 -o "$local_path" -w '%{http_code}' \
-		-H "Authorization: Bearer $token" \
-		"$DRIVE_API/files/$file_id?alt=media" 2>/dev/null || printf 000)"
-	case "$code" in
-		200)
-			printf '{"ok":true,"remote":"%s","local":"%s","bytes":%s}\n' \
-				"$(json_escape "$filename")" "$(json_escape "$local_path")" "$(wc -c <"$local_path" | tr -d ' ')"
-			;;
-		*)
-			rm -f "$local_path"
-			printf '{"ok":false,"error":"download_failed","http":%s}\n' "$code"
-			return 1
-			;;
-	esac
-}
+	# curl никогда не открывает старый получатель. Временный файл рядом
+	# с ним позволяет опубликовать готовые байты одной операцией rename.
+	umask 077
+	parent="${local_path%/*}"
+	drive_download_path "$local_path" || { drive_download_error local_path_not_allowed; exit 1; }
+	mkdir -p "$parent" || { drive_download_error download_local_failed; exit 1; }
+	drive_download_path "$local_path" || { drive_download_error local_path_not_allowed; exit 1; }
+	work="$(mktemp -d "$parent/.gdrive-download.XXXXXX")" || { drive_download_error download_local_failed; exit 1; }
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	chmod 700 "$work" || { drive_download_error download_local_failed; exit 1; }
+	: >"$work/content" || { drive_download_error download_local_failed; exit 1; }
+	chmod 600 "$work/content" || { drive_download_error download_local_failed; exit 1; }
+	# 0 отключает max-filesize: для пустого blob разрешаем не более одного
+	# байта на уровне curl, а ниже в любом случае требуем точное совпадение.
+	max_bytes="$expected_bytes"
+	[ "$max_bytes" != 0 ] || max_bytes=1
+	if ! code="$(curl -sS -m 120 --max-filesize "$max_bytes" -o "$work/content" -w '%{http_code}' \
+		-H "Authorization: Bearer $token" "$DRIVE_API/files/$file_id?alt=media")"; then
+		printf '{"ok":false,"error":"download_failed","http":0}\n'; exit 1
+	fi
+	drive_context_check || { drive_download_error download_context_changed; exit 1; }
+	if [ "$code" != 200 ]; then
+		case "$code" in [1-5][0-9][0-9]) ;; *) code=0 ;; esac
+		printf '{"ok":false,"error":"download_failed","http":%s}\n' "$code"; exit 1
+	fi
+	actual_bytes="$(drive_local_bytes "$work/content")" || { drive_download_error download_local_failed; exit 1; }
+	[ "$actual_bytes" = "$expected_bytes" ] || { drive_download_error download_size_mismatch; exit 1; }
+	after="$(remote_file_metadata "$file_id")" || { drive_download_error download_metadata_failed; exit 1; }
+	[ "$before" = "$after" ] || { drive_download_error download_remote_changed; exit 1; }
+	remote_json="$(json_escape "$filename")" || { drive_download_error download_local_failed; exit 1; }
+	local_json="$(json_escape "$local_path")" || { drive_download_error download_local_failed; exit 1; }
+	chmod 600 "$work/content" || { drive_download_error download_local_failed; exit 1; }
+	drive_context_check || { drive_download_error download_context_changed; exit 1; }
+	drive_download_path "$local_path" || { drive_download_error local_path_not_allowed; exit 1; }
+	# -T не позволяет незаметно переместить content внутрь каталога,
+	# появившегося по целевому имени. Родительские path races остаются R14.
+	mv -T "$work/content" "$local_path" || { drive_download_error download_local_failed; exit 1; }
+	printf '{"ok":true,"remote":"%s","local":"%s","bytes":%s}\n' \
+		"$remote_json" "$local_json" "$actual_bytes"
+)
 
 latest_backup_name() {
 	backups_id response
@@ -1391,7 +1448,7 @@ case "$command_name" in
 	status) cmd_status ;;
 	test) cmd_test ;;
 	list) cmd_list ;;
-	download) cmd_download "$1" "$2" ;;
+	download) cmd_download "$@" ;;
 	restore-config) cmd_restore_config "$1" ;;
 	sync-status) cmd_sync_status ;;
 	verify) verify_upload "$1" "$2" ;;

@@ -1,5 +1,16 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-11, **r309**, based on `c535dfa` (r308).
+B95–B97 repair the standalone download entry point, distinguish lookup failure,
+and preserve an existing destination until HTTP, ID/size, path and context checks
+succeed. See the [97-card register](bug-register.ru.md) and
+[r309 report](audit-fixes-r309.ru.md). This is not checksum verification, a pinned
+remote revision or safe configuration restore. List/restore, native UCI/jshn,
+RAM limits and path races remain R14. No live Google account was used.
+Android, access policy, workflow and runner code are unchanged.
+
+Historical continuation:
+
 Focused continuation: 2026-09-10, **r308**, based on `abb68ca` (r307).
 B93–B94 validate bounded complete Drive inventories for quota accounting and
 stop cleanup on failed/partial reads or unconfirmed DELETEs. Backups are counted,

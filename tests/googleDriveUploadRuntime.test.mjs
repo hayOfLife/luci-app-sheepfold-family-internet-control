@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto';
 import { describe, it } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { shellTestPath } from '../tools/quality/testEnvironment.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
@@ -47,6 +47,8 @@ function fixture(t, options = {}) {
   const source = process.env.SHEEPFOLD_GDRIVE_TEST_SOURCE || runtime;
   put('sheepfold-google-drive', readFileSync(join(source, 'sheepfold-google-drive'), 'utf8')
     .replaceAll('/tmp/sheepfold', path(ram)).replaceAll('/etc/config', path(config))
+    .replaceAll('DOWNLOAD_ROOT="/tmp"', `DOWNLOAD_ROOT=${q(path(root))}`)
+    .replaceAll('/tmp/*', `${path(root)}/*`)
     .replaceAll('/usr/share/libubox/jshn.sh', path(join(bin, 'jshn.sh')))
     .replaceAll('/etc/init.d/sheepfold', path(join(root, 'no-service'))));
   const archive = join(archiveDir, 'synthetic.tar'); writeFileSync(archive, payload);
@@ -113,9 +115,15 @@ elif method=='DELETE' and '/drive/v3/files/' in url:
   opts.setdefault('deletedIds',[]).append(file_id)
   for records in opts.get('inventoryFiles',{}).values(): records[:]=[v for v in records if v.get('id')!=file_id]
   pathlib.Path(os.environ['GDRIVE_OPTIONS']).write_text(json.dumps(opts))
+elif '/drive/v3/files/' in url and query.get('alt')==['media']:
+ kind='download'; body=opts.get('downloadBody','synthetic archive payload\\n'); http=str(opts.get('downloadHttp',200)); exitcode=opts.get('downloadExit',0)
+ opts['downloaded']=True
+ pathlib.Path(os.environ['GDRIVE_OPTIONS']).write_text(json.dumps(opts))
 elif '/files/file1' in url:
  kind='metadata'; http=str(opts.get('metadataHttp',200)); exitcode=opts.get('metadataExit',0)
  body=opts.get('metadataBody',json.dumps({'id':opts.get('metadataId','file1'),'size':str(opts['remoteSize'])},indent=2))
+ if opts.get('downloaded'):
+  body=opts.get('postMetadataBody',body); http=str(opts.get('postMetadataHttp',http)); exitcode=opts.get('postMetadataExit',exitcode)
 elif ' in parents' in search and not search.startswith('name='):
  kind='pruneList' if fields=='files(id,name,modifiedTime)' else 'inventory'
  folder_id=search.split("'")[1]
@@ -168,7 +176,14 @@ if opts.get('changeContextAt')==kind:
 with open(trace,'a') as f: f.write(json.dumps(event)+'\\n')
 out=arg('-o')
 if out:
- if out!='/dev/null': pathlib.Path(out).write_text(body)
+ if out!='/dev/null':
+  p=pathlib.Path(out)
+  if kind=='download':
+   downloaded=bytes.fromhex(opts['downloadHex']) if 'downloadHex' in opts else body.encode()
+   before=stat.S_IMODE(p.stat().st_mode) if p.exists() else None
+   p.write_bytes(downloaded)
+   with open(trace,'a') as f: f.write(json.dumps({'kind':'download-output','path':out,'bytes':downloaded.hex(),'beforeMode':before,'mode':stat.S_IMODE(p.stat().st_mode),'parentMode':stat.S_IMODE(p.parent.stat().st_mode),'maxFilesize':arg('--max-filesize')})+'\\n')
+  else: p.write_text(body)
 else: sys.stdout.write(body)
 if '-w' in args: sys.stdout.write(http)
 sys.exit(exitcode)
@@ -851,5 +866,159 @@ describe('Google Drive quota legacy cleanup controls',()=>{
     const r=f.call('prune_remote_logs',['50']);
     assert.equal(deleteTrace(f).length,1,'fault injection must reach DELETE');
     assert.equal(deleteTrace(f)[0].http,'500'); failed(r);
+  });
+});
+
+// r309: файлы получателя — синтетические. Модель HTTP записывает точные байты
+// и режим временного файла; искусственный файловый отказ обязан оставить trace.
+describe('Google Drive download safety', () => {
+  const oldData = 'existing local backup\n';
+  function target(f, name = 'saved.tar') {
+    const dir = join(f.root, 'downloads'); mkdirSync(dir, { recursive: true });
+    const file = join(dir, name); writeFileSync(file, oldData);
+    return file;
+  }
+  function assertPreserved(f, file, result) {
+    failed(result);
+    assert.ok(existsSync(file), 'existing destination was deleted');
+    assert.equal(readFileSync(file, 'utf8'), oldData, 'existing destination was changed');
+    const reply = JSON.parse(result.stdout); assert.equal(reply.ok, false);
+    assert.equal(readdirSync(join(f.root, 'downloads')).filter((v)=>v.startsWith('.gdrive-download.')).length, 0);
+    return reply;
+  }
+  it('downloads verified bytes through the actual CLI', (t) => {
+    const f=fixture(t), file=target(f); const result=f.run('download',['backups/synthetic.tar',f.path(file)]);
+    succeeded(result); assert.deepEqual(readFileSync(file),Buffer.from(payload));
+    const reply=JSON.parse(result.stdout); assert.equal(reply.ok,true); assert.equal(reply.bytes,payloadBytes);
+    const order=f.trace().map((v)=>v.kind); assert.ok(order.indexOf('metadata')<order.indexOf('download'));
+    assert.equal(order.filter((v)=>v==='metadata').length,2);
+    assert.equal(readdirSync(join(f.root,'downloads')).length,1);
+  });
+  for (const args of [[], ['backups/test.tar']]) it(`returns one JSON usage error for ${args.length} arguments`, (t) => {
+    const f=fixture(t), result=f.run('download',args); failed(result);
+    assert.equal(JSON.parse(result.stdout).error,'usage'); assert.equal(f.trace().length,0);
+  });
+  for (const remote of ['logs/test.log','backups/test.tar','test.tar']) it(`retains supported remote selector ${remote}`, (t)=>{
+    const f=fixture(t), file=target(f); succeeded(f.run('download',[remote,f.path(file)]));
+    const lookup=f.trace().find((v)=>v.kind==='lookup');
+    assert.ok(lookup.query.q[0].includes(`'${remote.startsWith('logs/')?'folder1':'backup1'}' in parents`));
+  });
+  for (const [label,opts,error] of [
+    ['missing',{newFile:true},'remote_missing'],
+    ['HTTP failure',{lookupHttp:500},'remote_lookup_failed'],
+    ['partial lookup',{lookupExit:7},'remote_lookup_failed'],
+    ['ambiguous',{lookupBody:'{"files":[{"id":"file1"},{"id":"file2"}]}'},'remote_lookup_failed'],
+  ]) it(`distinguishes ${label} before touching destination`, (t)=>{
+    const f=fixture(t,opts),file=target(f); const reply=assertPreserved(f,file,f.run('download',['test.tar',f.path(file)]));
+    assert.equal(reply.error,error); assert.ok(f.trace().some((v)=>v.kind==='lookup'));
+    assert.ok(!f.trace().some((v)=>v.kind==='download'));
+  });
+  for (const [label,opts] of [
+    ['HTTP 403',{downloadHttp:403}],['HTTP 500',{downloadHttp:500}],
+    ['HTTP 206',{downloadHttp:206}],['curl with partial body',{downloadExit:18,downloadBody:'partial'}],
+    ['curl fails after printing 200',{downloadExit:7}],
+  ]) it(`preserves old destination after ${label}`, (t)=>{
+    const f=fixture(t,opts),file=target(f); const reply=assertPreserved(f,file,f.run('download',['test.tar',f.path(file)]));
+    assert.equal(reply.error,'download_failed'); assert.ok(f.trace().some((v)=>v.kind==='download-output'));
+  });
+  it('does not publish or leave a new partial destination', (t)=>{
+    const f=fixture(t,{downloadExit:18,downloadBody:'partial'}),file=target(f); rmSync(file);
+    const result=f.run('download',['test.tar',f.path(file)]); failed(result); assert.ok(!existsSync(file));
+    assert.ok(f.trace().some((v)=>v.kind==='download'));
+    assert.deepEqual(readdirSync(join(f.root,'downloads')),[]);
+  });
+  for (const [label,opts] of [
+    ['bad metadata HTTP',{metadataHttp:500}],['bad metadata process',{metadataExit:7}],
+    ['wrong ID',{metadataId:'different'}],['bad JSON',{metadataBody:'{"id":"file1"'}],
+    ['absent size',{metadataBody:'{"id":"file1"}'}],
+  ]) it(`refuses ${label} before content download`, (t)=>{
+    const f=fixture(t,opts),file=target(f); const reply=assertPreserved(f,file,f.run('download',['test.tar',f.path(file)]));
+    assert.equal(reply.error,'download_metadata_failed'); assert.ok(f.trace().some((v)=>v.kind==='metadata'));
+    assert.ok(!f.trace().some((v)=>v.kind==='download'));
+  });
+  it('does not publish truncated bytes with HTTP 200', (t)=>{
+    const f=fixture(t,{downloadBody:'short'}),file=target(f);
+    const reply=assertPreserved(f,file,f.run('download',['test.tar',f.path(file)]));
+    assert.equal(reply.error,'download_size_mismatch'); assert.ok(f.trace().some((v)=>v.kind==='download'));
+  });
+  for (const [label,opts] of [
+    ['changed size',{postMetadataBody:'{"id":"file1","size":"42"}'}],
+    ['HTTP error',{postMetadataHttp:500}],['parser error',{postMetadataBody:'invalid'}],
+  ]) it(`keeps old destination after post-download metadata ${label}`, (t)=>{
+    const f=fixture(t,opts),file=target(f); assertPreserved(f,file,f.run('download',['test.tar',f.path(file)]));
+    assert.equal(f.trace().filter((v)=>v.kind==='metadata').length,2);
+  });
+  for (const at of ['lookup','download']) it(`stops changed context at ${at} without publishing`, (t)=>{
+    const f=fixture(t,{changeContextAt:at}),file=target(f);
+    assertPreserved(f,file,f.run('download',['test.tar',f.path(file)]));
+    assert.ok(f.trace().some((v)=>v.contextChanged));
+    if(at==='lookup') assert.ok(!f.trace().some((v)=>v.kind==='download'));
+  });
+  it('checks decimal length and preserves binary content including NUL', (t)=>{
+    const data=Buffer.from([0,255,13,10,42,0]),f=fixture(t,{remoteSize:'0006',downloadHex:data.toString('hex')}),file=target(f);
+    const result=f.run('download',['test.tar',f.path(file)]); succeeded(result);
+    assert.deepEqual(readFileSync(file),data); assert.equal(JSON.parse(result.stdout).bytes,6);
+    assert.equal(f.trace().find((v)=>v.kind==='download-output').maxFilesize,'6');
+  });
+  it('permits a confirmed empty blob', (t)=>{
+    const f=fixture(t,{remoteSize:0,downloadBody:''}),file=target(f); const result=f.run('download',['empty.log',f.path(file)]);
+    succeeded(result); assert.equal(readFileSync(file).length,0); assert.equal(JSON.parse(result.stdout).bytes,0);
+  });
+  it('supports spaces quotes and UTF-8 in a nested destination', (t)=>{
+    const f=fixture(t),dir=join(f.root,'new dir'),file=join(dir,native?'копия "семья".tar':'копия семьи.tar');
+    const result=f.run('download',['backups/семья "test".tar',f.path(file)]); succeeded(result);
+    assert.deepEqual(readFileSync(file),Buffer.from(payload)); assert.equal(JSON.parse(result.stdout).remote,'семья "test".tar');
+  });
+  for (const suffix of ['../escape.tar','./saved.tar','nested/../saved.tar','saved.tar/']) it(`rejects ambiguous local components ${suffix}`, (t)=>{
+    const f=fixture(t),file=target(f); const result=f.run('download',['test.tar',`${f.path(join(f.root,'downloads'))}/${suffix}`]);
+    failed(result); assert.equal(JSON.parse(result.stdout).error,'local_path_not_allowed');
+    assert.equal(readFileSync(file,'utf8'),oldData); assert.ok(!f.trace().some((v)=>v.kind==='download'));
+  });
+  for (const type of ['final link','parent link','directory']) it(`rejects destination ${type}`, {skip:!native}, (t)=>{
+    const f=fixture(t),file=target(f),outside=join(f.root,'other'); mkdirSync(outside);
+    const saved=join(outside,'copy.tar');writeFileSync(saved,oldData);let dest=file;
+    if(type==='final link'){rmSync(file);symlinkSync(saved,file);}
+    if(type==='parent link'){dest=join(f.root,'alias','copy.tar');symlinkSync(outside,join(f.root,'alias'));}
+    if(type==='directory'){rmSync(file);mkdirSync(file);}
+    const result=f.run('download',['test.tar',f.path(dest)]);failed(result);
+    assert.equal(JSON.parse(result.stdout).error,'local_path_not_allowed');assert.equal(readFileSync(saved,'utf8'),oldData);
+    assert.ok(!f.trace().some((v)=>v.kind==='download'));
+  });
+  it('uses private staging and publishes mode 0600', {skip:!native}, (t)=>{
+    const f=fixture(t),file=target(f);chmodSync(file,0o644);succeeded(f.run('download',['test.tar',f.path(file)]));
+    // setgid может наследоваться от каталога sandbox; проверяем именно биты доступа.
+    const event=f.trace().find((v)=>v.kind==='download-output');assert.equal(event.mode&0o777,0o600);assert.equal(event.parentMode&0o777,0o700);
+    assert.notEqual(event.path,f.path(file));assert.equal(statSync(file).mode&0o777,0o600);
+  });
+  for (const tool of ['mkdir','mktemp','chmod','mv','wc']) it(`preserves destination after injected ${tool} failure`, {skip:!native}, (t)=>{
+    const f=fixture(t),file=target(f);
+    const predicate=tool==='mkdir'?`case "$*" in *downloads*) true;; *) false;; esac`
+      :tool==='wc'?`[ -f ${q(f.path(join(f.root,'download-wc-ready')))} ]`
+      :`case "$*" in *.gdrive-download.*) true;; *) false;; esac`;
+    if(tool==='wc'){
+      // Сбой только после передачи content, не во время OAuth/metadata.
+      f.fault('curl',`case "$*" in *alt=media*) true;; *) false;; esac`,
+        `"${f.path(join(f.bin,'curl-original'))}" "$@"; status=$?; touch ${q(f.path(join(f.root,'download-wc-ready')))}; exit "$status"`);
+    }
+    f.fault(tool,predicate,tool==='wc'?"printf '25\\n'; exit 1":"exit 1");
+    assertPreserved(f,file,f.run('download',['test.tar',f.path(file)]));
+    assert.ok(f.trace().some((v)=>v.kind===`${tool}-fault`),'fault not reached');
+  });
+  it('downloads a config archive without applying settings', (t)=>{
+    const f=fixture(t),file=target(f),configFile=join(f.root,'config','sheepfold');writeFileSync(configFile,'original settings');
+    succeeded(f.run('download',['backups/sheepfold-config-20260911.tar',f.path(file)]));
+    assert.equal(readFileSync(configFile,'utf8'),'original settings');
+  });
+  it('blocks a traversal outside the permitted root without changing the neighbour', (t)=>{
+    const f=fixture(t),neighbour=f.root+'-neighbour';mkdirSync(neighbour);t.after(()=>rmSync(neighbour,{recursive:true,force:true}));
+    const file=join(neighbour,'saved.tar');writeFileSync(file,oldData);
+    const destination=f.path(f.root)+'/../'+basename(neighbour)+'/saved.tar';
+    const result=f.run('download',['test.tar',destination]);failed(result);
+    assert.equal(JSON.parse(result.stdout).error,'local_path_not_allowed');assert.equal(readFileSync(file,'utf8'),oldData);
+    assert.ok(!f.trace().some((v)=>v.kind==='download'));
+  });
+  it('rejects a control character in the remote name before HTTP', (t)=>{
+    const f=fixture(t),file=target(f),reply=assertPreserved(f,file,f.run('download',['bad\nname.tar',f.path(file)]));
+    assert.equal(reply.error,'path_not_allowed');assert.equal(f.trace().length,0);
   });
 });
