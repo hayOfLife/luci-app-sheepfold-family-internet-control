@@ -1,6 +1,8 @@
 #!/bin/sh
 # Архивирование журналов и резервных копий настроек в Google Drive через Drive API v3.
 set -eu
+# Списки переменных объявляются через local: без него shell запускает первое
+# имя как команду. Локальные имена также не перезаписывают состояние caller.
 
 DRIVE_API="https://www.googleapis.com/drive/v3"
 DRIVE_UPLOAD="https://www.googleapis.com/upload/drive/v3"
@@ -29,12 +31,14 @@ have_curl() {
 }
 
 credentials_ready() {
+	local client_id refresh_token
 	client_id="$(uci_get client_id '')"
 	refresh_token="$(uci_get refresh_token '')"
 	[ -n "$client_id" ] && [ -n "$refresh_token" ]
 }
 
 normalize_root_folder() {
+	local folder
 	folder="$(uci_get root_folder '/sheepfold')"
 	folder="${folder#/}"
 	folder="${folder%/}"
@@ -43,6 +47,7 @@ normalize_root_folder() {
 }
 
 quota_mb() {
+	local quota
 	quota="$(uci_get quota_mb '500')"
 	case "$quota" in
 		50|100|250|500|1024) printf '%s' "$quota" ;;
@@ -63,17 +68,19 @@ require_tooling() {
 }
 
 json_get_string() {
+	local key
 	key="$1"
 	printf '%s' "$2" | sed -n "s/.*\"$key\":\"\\([^\"]*\\)\".*/\\1/p" | head -1
 }
 
 json_get_number() {
+	local key
 	key="$1"
 	printf '%s' "$2" | sed -n "s/.*\"$key\":\\([0-9][0-9]*\\).*/\\1/p" | head -1
 }
 
 access_token() {
-	now expires_at cached_token response new_token expires_in client_id client_secret refresh_token
+	local now expires_at cached_token response new_token expires_in client_id client_secret refresh_token
 
 	require_tooling || return 1
 	now="$(date +%s 2>/dev/null || printf 0)"
@@ -116,75 +123,135 @@ access_token() {
 }
 
 drive_request() {
+	local method url extra token
 	method="$1"
 	url="$2"
 	extra="${3:-}"
-	token
 
 	token="$(access_token)" || return 1
 	# shellcheck disable=SC2086
 	curl -sS -m 120 -H "Authorization: Bearer $token" -X "$method" $extra "$url"
 }
 
+
+# Эти функции запускаются также внутри if: set -e там не защищает от
+# промежуточного отказа. Каждый шаг до отправки/удаления проверяется явно.
+drive_workdir() (
+	umask 077
+	[ ! -L /tmp/sheepfold ] || exit 1
+	mkdir -p /tmp/sheepfold || exit 1
+	chmod 700 /tmp/sheepfold || exit 1
+	work="$(mktemp -d /tmp/sheepfold/.gdrive-upload.XXXXXX)" || exit 1
+	# Путь принадлежит операции только после успешного mktemp.
+	chmod 700 "$work" || { rm -rf "$work"; exit 1; }
+	printf '%s' "$work"
+)
+
+drive_decimal() {
+	local value
+	value="$1"
+	case "$value" in ''|*[!0-9]*) return 1 ;; esac
+	[ "${#value}" -le 19 ] || return 1
+	while :; do
+		case "$value" in 0?*) value="${value#0}" ;; *) break ;; esac
+	done
+	printf '%s' "$value"
+}
+
+drive_local_bytes() {
+	local bytes
+	bytes="$(wc -c <"$1")" || return 1
+	bytes="$(printf '%s' "$bytes" | tr -d '[:space:]')" || return 1
+	drive_decimal "$bytes"
+}
+
+# jshn уже входит в зависимости обеих редакций. Не подключаем AI-only JSON
+# library и не разбираем ответ Drive регуляркой, зависящей от пробелов.
+drive_metadata_values() (
+	[ -r /usr/share/libubox/jshn.sh ] || exit 1
+	. /usr/share/libubox/jshn.sh
+	json_init
+	json_load "$1" || exit 1
+	json_get_type value_type id || exit 1
+	[ "$value_type" = string ] || exit 1
+	json_get_var file_id id || exit 1
+	case "$file_id" in ''|*[!A-Za-z0-9_-]*) exit 1 ;; esac
+	[ "${#file_id}" -le 256 ] || exit 1
+	if [ -z "${2:-}" ]; then
+		printf '%s' "$file_id"
+		exit 0
+	fi
+	[ "$file_id" = "$2" ] || exit 1
+	json_get_type value_type size || exit 1
+	case "$value_type" in string|int) ;; *) exit 1 ;; esac
+	json_get_var remote_bytes size || exit 1
+	remote_bytes="$(drive_decimal "$remote_bytes")" || exit 1
+	printf '%s\t%s' "$file_id" "$remote_bytes"
+)
+
+remote_file_metadata() (
+	file_id="$1"
+	case "$file_id" in ''|*[!A-Za-z0-9_-]*) exit 1 ;; esac
+	work="$(drive_workdir)" || exit 1
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	token="$(access_token)" || exit 1
+	code="$(curl -sS -m 60 -o "$work/metadata" -w '%{http_code}' \
+		-H "Authorization: Bearer $token" \
+		"$DRIVE_API/files/$file_id?fields=id,size")" || exit 1
+	[ "$code" = 200 ] || exit 1
+	response="$(cat "$work/metadata")" || exit 1
+	drive_metadata_values "$response" "$file_id"
+)
+
 drive_upload_media() {
+	local file_id local_path token code
 	file_id="$1"
 	local_path="$2"
-	token response code
-
 	token="$(access_token)" || return 1
 	code="$(curl -sS -m 120 -o /dev/null -w '%{http_code}' -X PATCH \
 		-H "Authorization: Bearer $token" \
 		-H "Content-Type: application/octet-stream" \
 		--data-binary "@$local_path" \
-		"$DRIVE_UPLOAD/files/$file_id?uploadType=media" 2>/dev/null || printf 000)"
-	printf '%s' "$code"
+		"$DRIVE_UPLOAD/files/$file_id?uploadType=media")" || return 1
+	case "$code" in 200|201|204) printf '%s' "$code" ;; *) return 1 ;; esac
 }
 
-drive_create_file() {
+drive_create_file() (
 	folder_id="$1"
 	local_path="$2"
 	filename="$3"
-	boundary body_file token code response file_id size
-
-	boundary="sheepfold_gdrive_$$"
-	body_file="/tmp/sheepfold/.gdrive-multipart-$$"
-	token="$(access_token)" || return 1
-
+	umask 077
+	work="$(drive_workdir)" || exit 1
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	boundary="sheepfold_gdrive_${work##*/}"
+	token="$(access_token)" || exit 1
+	name_json="$(json_escape "$filename")" || exit 1
 	{
-		printf -- '--%s\r\n' "$boundary"
-		printf 'Content-Type: application/json; charset=UTF-8\r\n\r\n'
-		printf '{"name":"%s","parents":["%s"]}\r\n' "$(json_escape "$filename")" "$folder_id"
-		printf -- '--%s\r\n' "$boundary"
-		printf 'Content-Type: application/octet-stream\r\n\r\n'
-		cat "$local_path"
-		printf '\r\n--%s--\r\n' "$boundary"
-	} >"$body_file"
-
-	code="$(curl -sS -m 120 -o /tmp/sheepfold/.gdrive-create-response-$$ -w '%{http_code}' -X POST \
+		printf -- '--%s\r\n' "$boundary" || exit 1
+		printf 'Content-Type: application/json; charset=UTF-8\r\n\r\n' || exit 1
+		printf '{"name":"%s","parents":["%s"]}\r\n' "$name_json" "$folder_id" || exit 1
+		printf -- '--%s\r\n' "$boundary" || exit 1
+		printf 'Content-Type: application/octet-stream\r\n\r\n' || exit 1
+		cat "$local_path" || exit 1
+		printf '\r\n--%s--\r\n' "$boundary" || exit 1
+	} >"$work/multipart" || exit 1
+	chmod 600 "$work/multipart" || exit 1
+	code="$(curl -sS -m 120 -o "$work/response" -w '%{http_code}' -X POST \
 		-H "Authorization: Bearer $token" \
 		-H "Content-Type: multipart/related; boundary=$boundary" \
-		--data-binary "@$body_file" \
-		"$DRIVE_UPLOAD/files?uploadType=multipart&fields=id,size" 2>/dev/null || printf 000)"
-	rm -f "$body_file"
-
-	case "$code" in
-		200|201)
-			response="$(cat /tmp/sheepfold/.gdrive-create-response-$$ 2>/dev/null || true)"
-			rm -f /tmp/sheepfold/.gdrive-create-response-$$
-			file_id="$(json_get_string id "$response")"
-			size="$(json_get_number size "$response")"
-			printf '%s\t%s\n' "$file_id" "${size:-0}"
-			return 0
-			;;
-	esac
-	rm -f /tmp/sheepfold/.gdrive-create-response-$$
-	return 1
-}
+		--data-binary "@$work/multipart" \
+		"$DRIVE_UPLOAD/files?uploadType=multipart&fields=id,size")" || exit 1
+	case "$code" in 200|201) ;; *) exit 1 ;; esac
+	response="$(cat "$work/response")" || exit 1
+	drive_metadata_values "$response"
+)
 
 find_folder_id() {
+	local parent_id name query response folder_id
 	parent_id="$1"
 	name="$2"
-	query response folder_id
 
 	query="$(printf "name='%s' and mimeType='application/vnd.google-apps.folder' and '%s' in parents and trashed=false" \
 		"$(printf '%s' "$name" | sed "s/'/\\\\'/g")" "$parent_id")"
@@ -195,9 +262,9 @@ find_folder_id() {
 }
 
 create_folder_id() {
+	local parent_id name token response folder_id code
 	parent_id="$1"
 	name="$2"
-	token response folder_id code
 
 	token="$(access_token)" || return 1
 	response="$(curl -sS -m 60 -X POST \
@@ -211,9 +278,9 @@ create_folder_id() {
 }
 
 ensure_folder_id() {
+	local parent_id name folder_id
 	parent_id="$1"
 	name="$2"
-	folder_id
 
 	folder_id="$(find_folder_id "$parent_id" "$name" 2>/dev/null || true)"
 	if [ -n "$folder_id" ]; then
@@ -224,7 +291,7 @@ ensure_folder_id() {
 }
 
 cache_folder_ids() {
-	root_name root_id logs_id backups_id
+	local root_name root_id logs_id backups_id
 
 	root_name="$(normalize_root_folder)"
 	root_id="$(ensure_folder_id root "$root_name")" || return 1
@@ -238,12 +305,14 @@ cache_folder_ids() {
 }
 
 folder_id_from_cache() {
+	local key
 	key="$1"
 	[ -r "$FOLDER_CACHE" ] || cache_folder_ids || return 1
 	json_get_string "$key" "$(cat "$FOLDER_CACHE" 2>/dev/null || true)"
 }
 
 remote_name_allowed() {
+	local name
 	name="$1"
 	case "$name" in
 		*/*|*..*) return 1 ;;
@@ -252,6 +321,7 @@ remote_name_allowed() {
 }
 
 resolve_remote_name() {
+	local spec
 	spec="$1"
 	case "$spec" in
 		logs/*) printf '%s' "${spec#logs/}" ;;
@@ -261,9 +331,9 @@ resolve_remote_name() {
 }
 
 find_file_in_folder() {
+	local folder_id name query response file_id
 	folder_id="$1"
 	name="$2"
-	query response file_id
 
 	query="$(printf "name='%s' and '%s' in parents and trashed=false" \
 		"$(printf '%s' "$name" | sed "s/'/\\\\'/g")" "$folder_id")"
@@ -323,7 +393,7 @@ folder_list_json_array() {
 }
 
 folder_used_bytes() {
-	logs_id backups_id used
+	local logs_id backups_id used folder_id response
 
 	logs_id="$(folder_id_from_cache logs)" || return 1
 	backups_id="$(folder_id_from_cache backups)" || return 1
@@ -336,6 +406,7 @@ folder_used_bytes() {
 }
 
 usage_state() {
+	local used_bytes quota_bytes pct
 	used_bytes="$1"
 	quota_bytes="$2"
 	[ "$quota_bytes" -gt 0 ] || { printf 'error\t0\n'; return; }
@@ -350,6 +421,7 @@ usage_state() {
 }
 
 write_sync_status() {
+	local command_name ok message
 	command_name="$1"
 	ok="$2"
 	message="$3"
@@ -361,76 +433,77 @@ write_sync_status() {
 }
 
 verify_upload() {
+	local local_path remote_bytes local_bytes
 	local_path="$1"
-	remote_bytes="$2"
-	local_bytes
-
-	[ -f "$local_path" ] || {
+	if [ ! -f "$local_path" ]; then
 		printf '{"ok":false,"error":"local_missing"}\n'
 		return 1
+	fi
+	local_bytes="$(drive_local_bytes "$local_path")" || {
+		printf '{"ok":false,"error":"local_read_failed"}\n'; return 1;
 	}
-
-	local_bytes="$(wc -c <"$local_path" | tr -d ' ')"
-	case "$local_bytes" in ''|*[!0-9]*) local_bytes=0 ;; esac
-	case "$remote_bytes" in ''|*[!0-9]*) remote_bytes=0 ;; esac
-
-	if [ "$local_bytes" -gt 0 ] && [ "$local_bytes" -eq "$remote_bytes" ]; then
+	remote_bytes="$(drive_decimal "$2")" || {
+		printf '{"ok":false,"error":"remote_metadata_invalid"}\n'; return 1;
+	}
+	# Сравниваем нормализованные строки, не int64/int32-арифметику shell.
+	if [ "$local_bytes" = "$remote_bytes" ]; then
 		printf '{"ok":true,"local_bytes":%s,"remote_bytes":%s}\n' "$local_bytes" "$remote_bytes"
 		return 0
 	fi
-
 	printf '{"ok":false,"error":"size_mismatch","local_bytes":%s,"remote_bytes":%s}\n' \
 		"$local_bytes" "$remote_bytes"
 	return 1
 }
 
 upload_file_to_folder() {
+	local folder_id local_path filename file_id
 	folder_id="$1"
 	local_path="$2"
 	filename="$3"
-	file_id code result remote_bytes
-
 	file_id="$(find_file_in_folder "$folder_id" "$filename" 2>/dev/null || true)"
 	if [ -n "$file_id" ]; then
-		code="$(drive_upload_media "$file_id" "$local_path")"
-		case "$code" in
-			200|201|204) ;;
-			*) printf '{"ok":false,"http":%s}\n' "$code"; return 1 ;;
-		esac
+		case "$file_id" in *[!A-Za-z0-9_-]*) return 1 ;; esac
+		drive_upload_media "$file_id" "$local_path" >/dev/null || return 1
 	else
-		result="$(drive_create_file "$folder_id" "$local_path" "$filename" 2>/dev/null || true)"
-		file_id="${result%%	*}"
-		remote_bytes="${result#*	}"
-		[ -n "$file_id" ] || {
-			printf '{"ok":false,"error":"create_failed"}\n'
-			return 1
-		}
+		file_id="$(drive_create_file "$folder_id" "$local_path" "$filename")" || return 1
 	fi
-
-	remote_bytes="$(wc -c <"$local_path" | tr -d ' ')"
-	printf '%s\t%s\n' "$file_id" "$remote_bytes"
+	# Только отдельный ответ о конкретном Drive ID является удалённым размером.
+	# wc локального файла здесь создавал фиктивное подтверждение загрузки.
+	remote_file_metadata "$file_id"
 }
 
-upload_and_verify() {
+upload_and_verify() (
 	folder_id="$1"
 	local_path="$2"
 	filename="$3"
-	result remote_bytes verify_json
-
-	result="$(upload_file_to_folder "$folder_id" "$local_path" "$filename")" || {
-		printf '%s\n' "$result"
-		return 1
-	}
+	umask 077
+	work="$(drive_workdir)" || exit 1
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	[ -f "$local_path" ] && [ ! -L "$local_path" ] || exit 1
+	cp "$local_path" "$work/content" || exit 1
+	chmod 600 "$work/content" || exit 1
+	cmp -s "$local_path" "$work/content" || exit 1
+	# Снимок не меняется от дописывания живого журнала во время HTTP-запроса.
+	# Удалять исходный архив при замеченном изменении тоже нельзя.
+	drive_local_bytes "$work/content" >/dev/null || exit 1
+	if ! result="$(upload_file_to_folder "$folder_id" "$work/content" "$filename")"; then
+		printf '{"ok":false,"error":"upload_unverified"}\n'
+		exit 1
+	fi
 	remote_bytes="${result#*	}"
-	verify_json="$(verify_upload "$local_path" "$remote_bytes" 2>/dev/null || true)"
-	case "$verify_json" in
-		*"\"ok\":true"*) printf '%s\n' "$verify_json"; return 0 ;;
-	esac
+	verify_json="$(verify_upload "$work/content" "$remote_bytes")" || {
+		printf '%s\n' "$verify_json"; exit 1;
+	}
+	if ! cmp -s "$local_path" "$work/content"; then
+		printf '{"ok":false,"error":"source_changed"}\n'
+		exit 1
+	fi
 	printf '%s\n' "$verify_json"
-	return 1
-}
+)
 
 create_config_backup() {
+	local backup_file
 	mkdir -p "$BACKUP_STAGING"
 	backup_file="$BACKUP_STAGING/sheepfold-config-$(date +%Y%m%d-%H%M%S).tar.gz"
 	if command -v gzip >/dev/null 2>&1; then
@@ -600,6 +673,7 @@ cmd_restore_config() {
 }
 
 cmd_status() {
+	local backend authorized state message used_mb quota free_pct used_bytes quota_bytes state_line used_pct
 	backend="google_drive"
 	authorized=0
 	state="error"
@@ -668,8 +742,8 @@ cmd_status() {
 }
 
 drive_delete_file() {
+	local file_id token code
 	file_id="$1"
-	token code
 
 	token="$(access_token)" || return 1
 	code="$(curl -sS -m 60 -o /dev/null -w '%{http_code}' -X DELETE \
@@ -682,8 +756,8 @@ drive_delete_file() {
 }
 
 prune_remote_logs() {
+	local quota_bytes logs_id used_bytes response file_id
 	quota_bytes="$1"
-	logs_id used_bytes response
 
 	logs_id="$(folder_id_from_cache logs)" || return 0
 	used_bytes="$(folder_used_bytes 2>/dev/null || printf 0)"
@@ -699,7 +773,7 @@ prune_remote_logs() {
 }
 
 cmd_push_events() {
-	logs_id verify_json
+	local logs_id verify_json
 
 	[ "$(global_get log_storage ram)" = "google_drive" ] || return 0
 	[ -f "$EVENTS_LOG" ] || return 0
@@ -719,6 +793,7 @@ cmd_push_events() {
 }
 
 cmd_archive_push() {
+	local logs_id backups_id quota_bytes pushed errors archive events_copy backup_file
 	[ "$(global_get log_storage ram)" = "google_drive" ] || return 0
 	[ "$(uci_get authorized '0')" = "1" ] || cmd_status >/dev/null 2>&1 || true
 	[ "$(uci_get authorized '0')" = "1" ] || return 0

@@ -165,6 +165,7 @@ export const testCategories = Object.freeze({
     'siteListResilience.test.mjs',
   ],
   backend: [
+    'googleDriveUploadRuntime.test.mjs',
     'legacyLogRuntime.test.mjs',
     'logWriterRuntime.test.mjs',
     'adminNotificationRuntime.test.mjs',
@@ -328,6 +329,7 @@ export const testCategories = Object.freeze({
     'tokenDeviceBinding.test.mjs',
   ],
   security: [
+    'googleDriveUploadRuntime.test.mjs',
     'legacyLogRuntime.test.mjs',
     'logWriterRuntime.test.mjs',
     'childAccessRequestRuntime.test.mjs',

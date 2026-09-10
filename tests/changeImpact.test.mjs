@@ -18,6 +18,13 @@ function fixtureConsumers(helperName) {
 }
 
 describe('change impact advisor §impact1', () => {
+  it('selects upload behavior and storage callers for Google Drive', () => {
+    const report = inspectChanges(['package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-google-drive']);
+    for (const name of ['googleDriveUploadRuntime.test.mjs', 'logStorage.test.mjs', 'logWriterRuntime.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']) {
+      assert.ok(report.directTests.includes(name), `missing upload consumer ${name}`);
+    }
+    assert.deepEqual(report.unknown, []);
+  });
   it('requires security and full verification for the experimental support credential profile', () => {
     const report = inspectChanges(['tools/remoteSupport/transportClient.mjs']);
     assert.deepEqual(report.unknown, []);

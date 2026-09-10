@@ -98,6 +98,16 @@ const controlRuntimeConsumers = Object.freeze([
 
 export const impactRules = Object.freeze([
   Object.freeze({
+    id: 'googleDriveUpload',
+    area: 'Проверяемая загрузка Google Drive',
+    pattern: /sheepfold-google-drive$/,
+    categories: ['backendFast', 'packaging'],
+    checks: ['routerReadOnly'],
+    risk: 'high',
+    directTests: Object.freeze(['googleDriveUploadRuntime.test.mjs', 'logStorage.test.mjs', 'logWriterRuntime.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']),
+    review: 'Разделить запуск shell, подготовку тела и независимый ответ Drive. Сбой или несовпадение метаданных не разрешают удалять исходный архив; модель HTTP/jshn не равна живому облаку.',
+  }),
+  Object.freeze({
     id: 'journalPathBoundary',
     area: 'Общий RAM-путь журнала',
     pattern: /sheepfold-log-common$/,
