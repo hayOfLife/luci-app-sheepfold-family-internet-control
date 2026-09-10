@@ -123,6 +123,7 @@ uninstall.sh                                         удаление с роу�
 - [Справочник ошибок и их исправления](docs/troubleshooting.ru.md)
 - [Подробный реестр ошибок и причин решений](docs/bug-register.ru.md)
 - [Аудит r306: точный поиск Drive и кэш папок](docs/audit-fixes-r306.ru.md)
+- [Аудит r308: учёт облачной квоты и безопасный отказ очистки](docs/audit-fixes-r308.ru.md)
 - [Аудит r307: контекст папок Drive и смена настроек во время загрузки](docs/audit-fixes-r307.ru.md)
 - [Аудит r305: OAuth и кэш токена](docs/audit-fixes-r305.ru.md)
 - [API между Android-приложением и OpenWRT](docs/android-openwrt-api.ru.md)

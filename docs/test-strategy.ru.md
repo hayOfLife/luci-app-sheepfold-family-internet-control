@@ -766,3 +766,14 @@ node --test --test-name-pattern 'Google Drive folder context' tests/googleDriveU
 PATH не исправляется ослаблением production. Успех не доказывает native libubox,
 Google ACL, отсутствие гонок после check, remote rollback и фактическую установку.
 Соседние проверки и упаковка — [отчёт r307](audit-fixes-r307.ru.md).
+
+
+## Учёт и очистка квоты Drive: r308
+
+В том же googleDriveUploadRuntime.test.mjs группы `Google Drive quota accounting`
+и `Google Drive quota cleanup` проверяют настоящий shell и модель файлов Drive.
+DELETE меняет только модель и оставляет HTTP-трассу. Повтор исходника r307 и
+промежуточного counter-only отделяет ранний нулевой расход от следующего отказа
+pruner. Команды, зависимости, результаты и границы — [отчёт r308](audit-fixes-r308.ru.md).
+Не использовать настоящий облачный аккаунт для этих регрессий и не считать
+проверку синтаксиса BusyBox исполнением native jshn.

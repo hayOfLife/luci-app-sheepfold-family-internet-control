@@ -7,6 +7,8 @@
  * URL и права кэша проверяются по записанному следу, не по grep исходников.
  * r307: кэш папок связан с реквизитами/root; HTTP-модель меняет UCI в точных
  * точках запроса и фиксирует, были ли дальнейшие запись/удаление исходника.
+ * r308: полный проверенный учёт квоты, отказ очистки до подтверждения списка,
+ * остановка после ошибки DELETE. Все удаляемые объекты существуют только в HTTP-модели.
  * Подмена источника повторяет те же assertions на предыдущей версии.
  */
 import assert from 'node:assert/strict';
@@ -104,17 +106,36 @@ elif '/upload/' in url:
  kind='upload'; http=str(opts.get('uploadHttp',200)); exitcode=opts.get('uploadExit',0)
  body=json.dumps({'id':'file1','size':str(opts['remoteSize'])}, separators=(',',':'))
  if opts.get('createBody') is not None: body=opts['createBody']
+elif method=='DELETE' and '/drive/v3/files/' in url:
+ kind='delete'; file_id=urllib.parse.urlsplit(url).path.rsplit('/',1)[-1]
+ http=str(opts.get('deleteHttp',204)); exitcode=opts.get('deleteExit',0); body='{}'
+ if http in ('200','204') and exitcode==0:
+  opts.setdefault('deletedIds',[]).append(file_id)
+  for records in opts.get('inventoryFiles',{}).values(): records[:]=[v for v in records if v.get('id')!=file_id]
+  pathlib.Path(os.environ['GDRIVE_OPTIONS']).write_text(json.dumps(opts))
 elif '/files/file1' in url:
  kind='metadata'; http=str(opts.get('metadataHttp',200)); exitcode=opts.get('metadataExit',0)
  body=opts.get('metadataBody',json.dumps({'id':opts.get('metadataId','file1'),'size':str(opts['remoteSize'])},indent=2))
-elif fields=='files(size)': body='{"files":[]}'
+elif ' in parents' in search and not search.startswith('name='):
+ kind='pruneList' if fields=='files(id,name,modifiedTime)' else 'inventory'
+ folder_id=search.split("'")[1]
+ body=json.dumps({'files':opts.get('inventoryFiles',{}).get(folder_id,[])},separators=(',',':'))
+ body=opts.get('inventoryBodies',{}).get(folder_id,opts.get(kind+'Body',body))
+ http=str(opts.get(kind+'Http',200)); exitcode=opts.get(kind+'Exit',0)
+ if opts.get('deletedIds'):
+  body=opts.get('afterDeleteBody',body); http=str(opts.get('afterDeleteHttp',http))
+
 elif search.startswith("name="):
  folder="mimeType='application/vnd.google-apps.folder'" in search
  kind='folderLookup' if folder else 'lookup'
- default='{"files":[]}' if opts.get('emptyFolders' if folder else 'newFile') else ('{"files":[{"id":"folder1","name":"folder"}]}' if folder else '{"files":[{"id":"file1","name":"synthetic.tar","size":"25"}]}')
- body=opts.get(kind+'Body',default); http=str(opts.get(kind+'Http',200)); exitcode=opts.get(kind+'Exit',0)
+ folder_id='backup1' if search.startswith("name='backups'") else 'folder1' if search.startswith("name='logs'") else 'root1'
+ default='{"files":[]}' if opts.get('emptyFolders' if folder else 'newFile') else (json.dumps({'files':[{'id':folder_id,'name':'folder'}]}) if folder else '{"files":[{"id":"file1","name":"synthetic.tar","size":"25"}]}')
+ body=opts.get(kind+'Body',default).replace('@folderId@',folder_id); http=str(opts.get(kind+'Http',200)); exitcode=opts.get(kind+'Exit',0)
 elif method=='POST' and '/drive/v3/files' in url:
- kind='folderCreate'; body=opts.get('folderCreateBody','{"id":"folder1"}'); http=str(opts.get('folderCreateHttp',200)); exitcode=opts.get('folderCreateExit',0)
+ kind='folderCreate'
+ data=arg('--data-binary',arg('-d')); metadata=json.loads(pathlib.Path(data[1:]).read_text()) if data.startswith('@') else json.loads(data)
+ folder_id='backup1' if metadata.get('name')=='backups' else 'folder1' if metadata.get('name')=='logs' else 'root1'
+ body=opts.get('folderCreateBody',json.dumps({'id':folder_id})).replace('@folderId@',folder_id); http=str(opts.get('folderCreateHttp',200)); exitcode=opts.get('folderCreateExit',0)
 else: body='{"id":"folder1"}'
 event={'kind':kind,'method':method,'url':url,'http':http,'exit':exitcode,'auth':arg('-H'),'query':query}
 if kind=='token':
@@ -456,7 +477,7 @@ describe('Google Drive OAuth exchange and cache', () => {
 describe('Google Drive lookup and folder publication',()=>{
   const noMutation = (f) => assert.ok(!f.trace().some((v)=>v.kind==='upload'||v.kind==='folderCreate'),'lookup failure caused remote mutation');
   it('updates the existing file from a normally formatted JSON response', (t)=>{
-    const f=fixture(t,{folderLookupBody:'{ "files": [ { "id": "folder1" } ] }',lookupBody:JSON.stringify({files:[{id:'file1',name:'synthetic.tar'}]},null,2)});
+    const f=fixture(t,{folderLookupBody:'{ "files": [ { "id": "@folderId@" } ] }',lookupBody:JSON.stringify({files:[{id:'file1',name:'synthetic.tar'}]},null,2)});
     succeeded(f.run()); assert.equal(existsSync(f.archive),false);
     assert.ok(!f.trace().some((v)=>v.kind==='folderCreate'));
     assert.equal(f.trace().find((v)=>v.kind==='upload').method,'PATCH');
@@ -516,7 +537,7 @@ describe('Google Drive lookup and folder publication',()=>{
   // Родитель .build может наследовать setgid; проверяем именно права доступа,
   // как в существующем upload-тесте, не принимая harmless 2700 за открытый 0755.
   it('accepts a formatted creation response and uses a private request file', {skip:!native},(t)=>{
-    const f=fixture(t,{emptyFolders:true,folderCreateBody:'{ "id": "folder1" }'}); succeeded(f.run());
+    const f=fixture(t,{emptyFolders:true,folderCreateBody:'{ "id": "@folderId@" }'}); succeeded(f.run());
     const event=f.trace().find((v)=>v.kind==='folderCreate'); assert.equal(event.mode&0o777,0o600); assert.equal(event.parentMode&0o777,0o700);
     assert.equal(JSON.parse(Buffer.from(event.bytes,'hex').toString()).mimeType,'application/vnd.google-apps.folder');
     assert.equal(statSync(join(f.ram,'.gdrive-folders.json')).mode&0o777,0o600);
@@ -680,5 +701,155 @@ describe('Google Drive folder context',()=>{
     const f=fixture(t); writeFileSync(folderFile(f),JSON.stringify({...boundRecord(f),context_key:'a'.repeat(64)}));
     const r=f.call('folder_id_from_cache',['logs']); succeeded(r); assert.equal(r.stdout,'folder1');
     assert.ok(f.trace().some((v)=>v.kind==='folderLookup'));
+  });
+});
+
+/* Quota tests execute the real reader/pruner and archive-push. The HTTP double is
+ * the only owner of synthetic remote files; a DELETE changes that model and is
+ * traced. No account, real cloud deletion, native UCI or libubox is exercised. */
+function quotaFile(id, size, folder = 'folder1', extra = {}) {
+  return { id, name: `${id}.log`, size, mimeType: 'text/plain', parents: [folder],
+    trashed: false, modifiedTime: '2026-09-10T10:00:00.000Z', ...extra };
+}
+const deleteTrace = (f) => f.trace().filter((v) => v.kind === 'delete');
+const noDelete = (f) => assert.deepEqual(deleteTrace(f), [], 'unconfirmed quota/list reached DELETE');
+
+describe('Google Drive quota accounting', () => {
+  for (const numeric of [false, true]) it(`counts all entries including backups (numeric=${numeric})`, (t) => {
+    const n = (v) => numeric ? v : String(v);
+    const f = fixture(t, { inventoryFiles: { folder1: [quotaFile('a',n(10)),quotaFile('b',n(20))], backup1: [quotaFile('backup',n(7),'backup1')] } });
+    const r = f.call('folder_used_bytes'); succeeded(r); assert.equal(r.stdout, '37'); noDelete(f);
+    assert.equal(f.trace().filter((v)=>v.kind==='inventory').length,2);
+  });
+  it('counts a real empty result as zero', (t)=>{
+    const f=fixture(t); const r=f.call('folder_used_bytes'); succeeded(r); assert.equal(r.stdout,'0'); noDelete(f);
+  });
+  it('normalizes leading zero sizes as decimal', (t)=>{
+    const f=fixture(t,{inventoryFiles:{folder1:[quotaFile('a','000008'),quotaFile('b','000010')]}});
+    const r=f.call('folder_used_bytes'); succeeded(r); assert.equal(r.stdout,'18');
+  });
+  it('accepts formatted JSON and full unrelated file names without splitting fields', (t)=>{
+    const f=fixture(t,{inventoryBodies:{folder1:JSON.stringify({files:[quotaFile('a','9','folder1',{name:'Текст\tс пробелами😀.txt'})]},null,2)}});
+    const r=f.call('folder_used_bytes'); succeeded(r); assert.equal(r.stdout,'9');
+  });
+  for(const body of [
+    '{"files":[', '{"error":{"code":500}}', '{}', '{"files":{}}',
+    JSON.stringify({files:[quotaFile('a','oops')]}),
+    JSON.stringify({files:[quotaFile('a',true)]}),
+    JSON.stringify({files:[quotaFile('a','-1')]}),
+    JSON.stringify({files:[quotaFile('a','9223372036854775808')]}),
+    JSON.stringify({files:[quotaFile('a','999999999999999'),quotaFile('b','1')]}),
+    JSON.stringify({files:[quotaFile('a','1','other-folder')]}),
+    JSON.stringify({files:[quotaFile('a','1','folder1',{mimeType:'application/vnd.google-apps.folder'})]}),
+    JSON.stringify({files:[quotaFile('a','1','folder1',{trashed:true})]}),
+    JSON.stringify({files:[quotaFile('a','1'),quotaFile('a','2')]}),
+    JSON.stringify({files:[],nextPageToken:'second-page'}),
+    JSON.stringify({files:[],incompleteSearch:true}),
+    JSON.stringify({files:[],incompleteSearch:'false'}),
+  ]) it(`rejects unconfirmed usage ${body.slice(0,120)}`, (t)=>{
+    const f=fixture(t,{inventoryBodies:{folder1:body}}); const r=f.call('folder_used_bytes');
+    assert.ok(f.trace().some((v)=>v.kind==='inventory'),'inventory request not reached');
+    failed(r); assert.equal(r.stdout,'','partial usage leaked'); noDelete(f);
+  });
+  for(const options of [{inventoryHttp:500},{inventoryExit:7}]) it(`does not replace quota read failure with zero ${JSON.stringify(options)}`, (t)=>{
+    const f=fixture(t,options); const r=f.call('folder_used_bytes');
+    assert.ok(f.trace().some((v)=>v.kind==='inventory')); failed(r); assert.equal(r.stdout,''); noDelete(f);
+  });
+  it('rejects a response over the record limit rather than computing a partial total', (t)=>{
+    const f=fixture(t,{inventoryFiles:{folder1:Array.from({length:201},(_,i)=>quotaFile(`f${i}`,'1'))}});
+    failed(f.call('folder_used_bytes')); noDelete(f);
+  });
+  it('status reports unavailable usage, not healthy 100 percent free', (t)=>{
+    const f=fixture(t,{inventoryHttp:403}); const r=f.run('status'); succeeded(r);
+    const status=JSON.parse(r.stdout); assert.equal(status.state,'error'); assert.equal(status.free_pct,0);
+    assert.equal(status.message,'Could not read storage status.'); noDelete(f);
+  });
+  it('status counts quoted bytes in both folders', (t)=>{
+    const f=fixture(t,{inventoryFiles:{folder1:[quotaFile('a',String(2*1024*1024))],backup1:[quotaFile('b',String(3*1024*1024),'backup1')]}});
+    const r=f.run('status'); succeeded(r); const status=JSON.parse(r.stdout);
+    assert.equal(status.state,'ok'); assert.equal(status.used_mb,5); assert.equal(status.free_pct,99);
+  });
+  it('does not read a failed configured quota as 500 MB', (t)=>{
+    const f=fixture(t,{credentials:{quota_mb:'50'}});
+    f.fault('uci','[ "${2:-}" = get ] && [ "${3:-}" = sheepfold.gdrive.quota_mb ]','exit 7');
+    failed(f.call('quota_mb')); assert.ok(f.trace().some((v)=>v.kind==='uci-fault')); noDelete(f);
+  });
+  it('uses default quota only when the setting is confirmed absent', (t)=>{
+    const f=fixture(t,{credentials:{quota_mb:null}}); const r=f.call('quota_mb'); succeeded(r); assert.equal(r.stdout,'500');
+  });
+});
+
+describe('Google Drive quota cleanup',()=>{
+  it('deletes the oldest log first and stops once quota is satisfied', (t)=>{
+    const f=fixture(t,{inventoryFiles:{folder1:[quotaFile('oldLog','60'),quotaFile('newLog','40')]}});
+    const r=f.call('prune_remote_logs',['50']); succeeded(r);
+    assert.deepEqual(deleteTrace(f).map((v)=>v.url.split('/').pop()),['oldLog']);
+    const first=f.trace().find((v)=>v.kind==='inventory'); assert.deepEqual(first.query.orderBy,['modifiedTime,name']);
+  });
+  it('counts backups but never deletes them to meet quota', (t)=>{
+    const f=fixture(t,{inventoryFiles:{folder1:[quotaFile('oldLog','60')],backup1:[quotaFile('backup','80','backup1')]}});
+    failed(f.call('prune_remote_logs',['50']));
+    assert.deepEqual(deleteTrace(f).map((v)=>v.url.split('/').pop()),['oldLog']);
+  });
+  it('does not delete unrelated files in the logs folder', (t)=>{
+    const f=fixture(t,{inventoryFiles:{folder1:[quotaFile('notes','100','folder1',{name:'notes.txt'})]}});
+    failed(f.call('prune_remote_logs',['50'])); noDelete(f);
+  });
+  for(const options of [{inventoryHttp:500},{inventoryExit:7},{inventoryBody:'{"files":[],"nextPageToken":"more"}'}]) {
+    it(`does not delete with an unverified list ${JSON.stringify(options)}`, (t)=>{
+      const f=fixture(t,options); failed(f.call('prune_remote_logs',['50'])); noDelete(f);
+    });
+  }
+  it('checks every entry before the first DELETE', (t)=>{
+    const f=fixture(t,{inventoryFiles:{folder1:[quotaFile('good','100'),quotaFile('bad','1','folder1',{parents:['unrelated']})]}});
+    failed(f.call('prune_remote_logs',['50'])); noDelete(f);
+  });
+  for(const options of [{deleteHttp:500},{deleteHttp:429},{deleteExit:7}]) it(`stops at the first unconfirmed DELETE ${JSON.stringify(options)}`,(t)=>{
+    const f=fixture(t,{...options,inventoryFiles:{folder1:[quotaFile('oldLog','60'),quotaFile('newLog','60')]}});
+    failed(f.call('prune_remote_logs',['50'])); assert.equal(deleteTrace(f).length,1,'did not reach one controlled DELETE');
+  });
+  it('does not continue after quota reread fails following one deletion', (t)=>{
+    const f=fixture(t,{afterDeleteHttp:500,inventoryFiles:{folder1:[quotaFile('oldLog','60'),quotaFile('newLog','60')]}});
+    failed(f.call('prune_remote_logs',['50'])); assert.equal(deleteTrace(f).length,1);
+    assert.ok(f.trace().some((v)=>v.kind==='inventory' && v.http==='500'));
+  });
+  it('stops if a successful DELETE has not reduced the observed total', (t)=>{
+    const files=[quotaFile('oldLog','60'),quotaFile('newLog','60')];
+    const f=fixture(t,{afterDeleteBody:JSON.stringify({files}),inventoryFiles:{folder1:files}});
+    failed(f.call('prune_remote_logs',['50'])); assert.equal(deleteTrace(f).length,1);
+  });
+  it('does not use a malformed ID to construct a DELETE URL', (t)=>{
+    const f=fixture(t); failed(f.call('drive_delete_file',['../other?alt=media'])); noDelete(f);
+  });
+  it('archive-push reports cleanup failure instead of success after a verified upload', (t)=>{
+    const f=fixture(t,{inventoryHttp:500}); const r=f.run();
+    assert.ok(f.trace().some((v)=>v.kind==='metadata')); failed(r);
+    assert.equal(JSON.parse(r.stdout).ok,false);
+    assert.equal(JSON.parse(readFileSync(join(f.ram,'.gdrive-sync-status.json'),'utf8')).ok,false);
+    // A previously verified upload is not rolled back by a subsequent cleanup error.
+    assert.equal(existsSync(f.archive),false); noDelete(f);
+  });
+  it('context change during inventory prevents the first deletion', (t)=>{
+    const f=fixture(t,{changeContextAt:'inventory',inventoryFiles:{folder1:[quotaFile('a','100')]}});
+    failed(f.call('prune_remote_logs',['50'])); assert.ok(f.trace().some((v)=>v.contextChanged)); noDelete(f);
+  });
+});
+
+// Старый while/read терял последнюю строку. Перенос перед закрывающей скобкой
+// позволяет отдельно дойти до прежнего DELETE, не подменяя production-счётчик.
+describe('Google Drive quota legacy cleanup controls',()=>{
+  it('does not select the last compact candidate as the oldest', (t)=>{
+    const f=fixture(t,{pruneListBody:'{"files":[{"id":"oldLog"},{"id":"newLog"}\n]}',
+      inventoryFiles:{folder1:[quotaFile('oldLog','60'),quotaFile('newLog','40')]}});
+    const r=f.call('prune_remote_logs',['50']);
+    assert.ok(deleteTrace(f).length>0,'test must reach the deletion stage');
+    succeeded(r); assert.deepEqual(deleteTrace(f).map((v)=>v.url.split('/').pop()),['oldLog']);
+  });
+  it('does not hide a reached DELETE failure behind the final loop success', (t)=>{
+    const f=fixture(t,{deleteHttp:500,pruneListBody:'{"files":[{"id":"oldLog"}\n]}',
+      inventoryFiles:{folder1:[quotaFile('oldLog','60')]}});
+    const r=f.call('prune_remote_logs',['50']);
+    assert.equal(deleteTrace(f).length,1,'fault injection must reach DELETE');
+    assert.equal(deleteTrace(f)[0].http,'500'); failed(r);
   });
 });

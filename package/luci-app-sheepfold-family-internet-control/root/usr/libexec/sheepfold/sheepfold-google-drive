@@ -60,11 +60,19 @@ sheepfold.gdrive.root_folder='*) return 1 ;; esac
 }
 
 quota_mb() {
-	local quota
-	quota="$(uci_get quota_mb '500')"
+	local quota snapshot current
+	snapshot="$(uci -q show sheepfold.gdrive)" || return 1
+	if ! quota="$(uci -q get sheepfold.gdrive.quota_mb)"; then
+		case "
+$snapshot" in *'
+sheepfold.gdrive.quota_mb='*) return 1 ;; esac
+		quota=500
+	fi
+	current="$(uci -q show sheepfold.gdrive)" || return 1
+	[ "$snapshot" = "$current" ] || return 1
 	case "$quota" in
 		50|100|250|500|1024) printf '%s' "$quota" ;;
-		*) printf '500' ;;
+		*) return 1 ;;
 	esac
 }
 
@@ -747,18 +755,144 @@ folder_list_json_array() {
 	'
 }
 
-folder_used_bytes() {
-	local logs_id backups_id used folder_id response
+# Квота основана на полном списке двух папок, не на regex отдельных size.
+# Числа ограничены до арифметики: total*100 также помещается в int64.
+drive_usage_number() {
+	local value
+	value="$(drive_decimal "$1")" || return 1
+	[ "${#value}" -le 15 ] || return 1
+	printf '%s' "$value"
+}
 
-	logs_id="$(folder_id_from_cache logs)" || return 1
-	backups_id="$(folder_id_from_cache backups)" || return 1
+drive_inventory_item() (
+	json_get_type value_type id || exit 1
+	[ "$value_type" = string ] || exit 1
+	json_get_var item_id id || exit 1
+	drive_id_valid "$item_id" || exit 1
+	json_get_type value_type size || exit 1
+	case "$value_type" in string|int) ;; *) exit 1 ;; esac
+	json_get_var item_bytes size || exit 1
+	item_bytes="$(drive_usage_number "$item_bytes")" || exit 1
+	json_get_type value_type name || exit 1
+	[ "$value_type" = string ] || exit 1
+	json_get_var item_name name || exit 1
+	json_get_type value_type mimeType || exit 1
+	[ "$value_type" = string ] || exit 1
+	json_get_var mime_type mimeType || exit 1
+	case "$mime_type" in ''|application/vnd.google-apps.folder) exit 1 ;; esac
+	json_get_type value_type trashed || exit 1
+	[ "$value_type" = boolean ] || exit 1
+	json_get_var trashed trashed || exit 1
+	[ "$trashed" = 0 ] || exit 1
+	json_get_type value_type parents || exit 1
+	[ "$value_type" = array ] || exit 1
+	json_select parents || exit 1
+	json_get_keys parent_keys || exit 1
+	set -- "$1" $parent_keys
+	[ "$#" = 2 ] || exit 1
+	json_get_type value_type "$2" || exit 1
+	[ "$value_type" = string ] || exit 1
+	json_get_var parent_id "$2" || exit 1
+	[ "$parent_id" = "$1" ] || exit 1
+	# Квота учитывает всё, но чистка не получает права удалить произвольный
+	# документ или подпапку. Имена наружу не сериализуем в строковый протокол.
+	eligible=0
+	if remote_name_allowed "$item_name"; then
+		case "$item_name" in *.tar.gz|*.tar|*.log) eligible=1 ;; esac
+	fi
+	printf '%s\t%s\t%s\n' "$item_id" "$item_bytes" "$eligible"
+)
+
+drive_inventory_rows() (
+	set +u
+	set -f
+	[ -r /usr/share/libubox/jshn.sh ] || exit 1
+	. /usr/share/libubox/jshn.sh
+	json_init
+	drive_json_load "$1" || exit 1
+	parent_id="$2"
+	if json_get_type value_type error; then exit 1; fi
+	if json_get_type value_type incompleteSearch; then
+		[ "$value_type" = boolean ] || exit 1
+		json_get_var incomplete incompleteSearch || exit 1
+		[ "$incomplete" = 0 ] || exit 1
+	fi
+	if json_get_type value_type nextPageToken; then
+		[ "$value_type" = string ] || exit 1
+		json_get_var page_token nextPageToken || exit 1
+		[ -z "$page_token" ] || exit 1
+	fi
+	json_get_type value_type files || exit 1
+	[ "$value_type" = array ] || exit 1
+	json_select files || exit 1
+	json_get_keys indexes || exit 1
+	set -- $indexes
+	[ "$#" -le 200 ] || exit 1
+	for index in "$@"; do
+		json_get_type value_type "$index" || exit 1
+		[ "$value_type" = object ] || exit 1
+		# Подобъект разбирается в дочерней оболочке, JSON cursor родителя
+		# остаётся на массиве. Ошибку любой записи caller отбрасывает целиком.
+		( json_select "$index" && drive_inventory_item "$parent_id" ) || exit 1
+	done
+)
+
+drive_read_inventory() (
+	folder_id="$1"
+	output="$2"
+	drive_id_valid "$folder_id" || exit 1
+	work="$(drive_workdir)" || exit 1
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	umask 077
+	token="$(access_token)" || exit 1
+	drive_context_check || exit 1
+	code="$(curl -sS -m 60 --get -o "$work/inventory" -w '%{http_code}' \
+		-H "Authorization: Bearer $token" \
+		--data-urlencode "q='$folder_id' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'" \
+		--data-urlencode 'fields=files(id,name,size,mimeType,parents,trashed),nextPageToken,incompleteSearch' \
+		--data-urlencode 'pageSize=200' --data-urlencode 'orderBy=modifiedTime,name' \
+		"$DRIVE_API/files")" || exit 1
+	drive_context_check || exit 1
+	[ "$code" = 200 ] || exit 1
+	bytes="$(drive_local_bytes "$work/inventory")" || exit 1
+	[ "${#bytes}" -le 6 ] && [ "$bytes" -le 262144 ] || exit 1
+	response="$(cat "$work/inventory")" || exit 1
+	drive_inventory_rows "$response" "$folder_id" >"$work/rows" || exit 1
+	awk -F '\t' 'seen[$1]++ { exit 1 }' "$work/rows" || exit 1
+	drive_context_check || exit 1
+	cat "$work/rows" >"$output" || exit 1
+)
+
+drive_inventory_total() (
+	# Один ID нельзя учесть дважды и затем удалить из неверной группы.
+	awk -F '\t' 'seen[$1]++ { exit 1 }' "$@" || exit 1
 	used=0
-	for folder_id in "$logs_id" "$backups_id"; do
-		response="$(drive_request GET "$DRIVE_API/files?q=$(printf "'%s' in parents and trashed=false" "$folder_id" | sed 's/ /%20/g')&fields=files(size)&pageSize=200" 2>/dev/null || true)"
-		used=$((used + $(printf '%s' "$response" | sed -n 's/.*"size":\([0-9][0-9]*\).*/\1/p' | awk '{s+=$1} END {print s+0}')))
+	tab="$(printf '\t')"
+	for rows in "$@"; do
+		while IFS="$tab" read -r item_id item_bytes eligible; do
+			item_bytes="$(drive_usage_number "$item_bytes")" || exit 1
+			used=$((used + item_bytes))
+			[ "$used" -le 999999999999999 ] || exit 1
+		done <"$rows"
 	done
 	printf '%s' "$used"
-}
+)
+
+folder_used_bytes() (
+	drive_context_begin || exit 1
+	logs_id="$(folder_id_from_cache logs)" || exit 1
+	backups_id="$(folder_id_from_cache backups)" || exit 1
+	[ "$logs_id" != "$backups_id" ] || exit 1
+	work="$(drive_workdir)" || exit 1
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	drive_read_inventory "$logs_id" "$work/logs" || exit 1
+	drive_read_inventory "$backups_id" "$work/backups" || exit 1
+	used="$(drive_inventory_total "$work/logs" "$work/backups")" || exit 1
+	drive_context_check || exit 1
+	printf '%s' "$used"
+)
 
 usage_state() {
 	local used_bytes quota_bytes pct
@@ -1029,14 +1163,17 @@ cmd_restore_config() {
 		"$(json_escape "$requested")" "$(json_escape "${safety_backup:-}")"
 }
 
-cmd_status() {
+cmd_status() (
 	local backend authorized state message used_mb quota free_pct used_bytes quota_bytes state_line used_pct
 	backend="google_drive"
 	authorized=0
 	state="error"
 	message="Google Drive is not configured"
 	used_mb=0
-	quota="$(quota_mb)"
+	quota="$(quota_mb)" || {
+		printf '{"backend":"google_drive","state":"error","message":"Could not read storage status.","authorized":0,"used_mb":0,"quota_mb":0,"free_pct":0}\n'
+		return 0
+	}
 	free_pct=100
 
 	if [ "$(global_get log_storage ram)" != "google_drive" ]; then
@@ -1060,7 +1197,7 @@ cmd_status() {
 		return 0
 	fi
 
-	if ! access_token >/dev/null 2>&1; then
+	if ! drive_context_begin || ! access_token >/dev/null 2>&1; then
 		message="Google Drive authorization failed"
 		printf '{"backend":"%s","state":"error","message":"%s","authorized":0,"used_mb":0,"quota_mb":%s,"free_pct":0}\n' \
 			"$backend" "$(json_escape "$message")" "$quota"
@@ -1075,8 +1212,10 @@ cmd_status() {
 		return 0
 	}
 
-	used_bytes="$(folder_used_bytes 2>/dev/null || printf 0)"
-	case "$used_bytes" in ''|*[!0-9]*) used_bytes=0 ;; esac
+	if ! used_bytes="$(folder_used_bytes 2>/dev/null)" || ! drive_context_check; then
+		printf '{"backend":"%s","state":"error","message":"Could not read storage status.","authorized":1,"used_mb":0,"quota_mb":%s,"free_pct":0}\n' "$backend" "$quota"
+		return 0
+	fi
 	used_mb=$((used_bytes / 1024 / 1024))
 	quota_bytes=$((quota * 1024 * 1024))
 	state_line="$(usage_state "$used_bytes" "$quota_bytes")"
@@ -1096,40 +1235,54 @@ cmd_status() {
 
 	printf '{"backend":"%s","state":"%s","message":"%s","authorized":%s,"used_mb":%s,"quota_mb":%s,"free_pct":%s}\n' \
 		"$backend" "$state" "$(json_escape "$message")" "$authorized" "$used_mb" "$quota" "$free_pct"
-}
+)
 
 drive_delete_file() {
 	local file_id token code
 	file_id="$1"
-
+	drive_id_valid "$file_id" || return 1
 	token="$(access_token)" || return 1
 	drive_context_check || return 1
 	code="$(curl -sS -m 60 -o /dev/null -w '%{http_code}' -X DELETE \
 		-H "Authorization: Bearer $token" \
-		"$DRIVE_API/files/$file_id" 2>/dev/null || printf 000)"
+		"$DRIVE_API/files/$file_id")" || return 1
 	drive_context_check || return 1
-	case "$code" in
-		200|204) return 0 ;;
-	esac
+	case "$code" in 200|204) return 0 ;; esac
 	return 1
 }
 
-prune_remote_logs() {
-	local quota_bytes logs_id used_bytes response file_id
-	quota_bytes="$1"
-
-	logs_id="$(folder_id_from_cache logs)" || return 0
-	used_bytes="$(folder_used_bytes 2>/dev/null || printf 0)"
-	[ "$used_bytes" -le "$quota_bytes" ] && return 0
-
-	response="$(drive_request GET "$DRIVE_API/files?q=$(printf "'%s' in parents and trashed=false" "$logs_id" | sed 's/ /%20/g')&fields=files(id,name,modifiedTime)&pageSize=200&orderBy=modifiedTime" 2>/dev/null || true)"
-	printf '%s' "$response" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | while IFS= read -r file_id; do
-		[ -n "$file_id" ] || continue
-		drive_delete_file "$file_id" >/dev/null 2>&1 || true
-		used_bytes="$(folder_used_bytes 2>/dev/null || printf 0)"
-		[ "$used_bytes" -le "$quota_bytes" ] && break
-	done
-}
+prune_remote_logs() (
+	quota_bytes="$(drive_usage_number "$1")" || exit 1
+	drive_context_begin || exit 1
+	logs_id="$(folder_id_from_cache logs)" || exit 1
+	backups_id="$(folder_id_from_cache backups)" || exit 1
+	[ "$logs_id" != "$backups_id" ] || exit 1
+	work="$(drive_workdir)" || exit 1
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	# Ни один DELETE не разрешён до полной проверки обеих папок. Частичная
+	# страница, ошибка или неполный поиск не являются доказанной квотой.
+	drive_read_inventory "$logs_id" "$work/plan" || exit 1
+	drive_read_inventory "$backups_id" "$work/backups" || exit 1
+	used_bytes="$(drive_inventory_total "$work/plan" "$work/backups")" || exit 1
+	[ "$used_bytes" -gt "$quota_bytes" ] || exit 0
+	tab="$(printf '\t')"
+	while IFS="$tab" read -r file_id file_bytes eligible; do
+		[ "$eligible" = 1 ] && [ "$file_bytes" -gt 0 ] || continue
+		drive_delete_file "$file_id" || exit 1
+		# Не продолжаем удаление по старому total после отказа или устаревшего
+		# ответа. Уже выполненный DELETE не откатывается этим перечитыванием.
+		previous_bytes="$used_bytes"
+		drive_read_inventory "$logs_id" "$work/current" || exit 1
+		drive_read_inventory "$backups_id" "$work/backups" || exit 1
+		used_bytes="$(drive_inventory_total "$work/current" "$work/backups")" || exit 1
+		[ "$used_bytes" -lt "$previous_bytes" ] || exit 1
+		[ "$used_bytes" -gt "$quota_bytes" ] || exit 0
+	done <"$work/plan"
+	# Backups и посторонние документы остаются. Невозможность достичь квоты
+	# удалением журналов — ошибка, не разрешение расширить область удаления.
+	exit 1
+)
 
 cmd_push_events() (
 	local logs_id verify_json
@@ -1154,7 +1307,7 @@ cmd_push_events() (
 )
 
 cmd_archive_push() (
-	local logs_id backups_id quota_bytes pushed errors archive events_copy backup_file
+	local logs_id backups_id quota quota_bytes pushed errors archive events_copy backup_file
 	[ "$(global_get log_storage ram)" = "google_drive" ] || return 0
 	[ "$(uci_get authorized '0')" = "1" ] || cmd_status >/dev/null 2>&1 || true
 	[ "$(uci_get authorized '0')" = "1" ] || return 0
@@ -1164,7 +1317,8 @@ cmd_archive_push() (
 	cache_folder_ids || return 1
 	logs_id="$(folder_id_from_cache logs)" || return 1
 	backups_id="$(folder_id_from_cache backups)" || return 1
-	quota_bytes=$(( $(quota_mb) * 1024 * 1024 ))
+	quota="$(quota_mb)" || return 1
+	quota_bytes=$((quota * 1024 * 1024))
 
 	pushed=0
 	errors=0
@@ -1208,7 +1362,9 @@ cmd_archive_push() (
 	fi
 
 	drive_context_check || return 1
-	prune_remote_logs "$quota_bytes" || true
+	if ! prune_remote_logs "$quota_bytes"; then
+		errors=$((errors + 1))
+	fi
 	drive_context_check || return 1
 
 	if [ "$errors" -gt 0 ]; then

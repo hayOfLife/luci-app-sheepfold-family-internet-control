@@ -1,5 +1,16 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-10, **r308**, based on `abb68ca` (r307).
+B93–B94 validate bounded complete Drive inventories for quota accounting and
+stop cleanup on failed/partial reads or unconfirmed DELETEs. Backups are counted,
+not pruned. See the [94-card register](bug-register.ru.md) and
+[r308 report](audit-fixes-r308.ru.md). No live cloud deletion, full pagination or
+atomic UCI/cloud transaction is claimed. Status commits, list/download/restore,
+RAM limits and concurrent server-side changes remain R14.
+Android, access policy, workflow and runner code are unchanged.
+
+Historical continuation:
+
 Focused continuation: 2026-09-10, **r307**, based on `694355b` (r306).
 B91–B92 bind folder-cache reads to verified credentials and the normalized root,
 and abort the supported upload paths on detected in-flight configuration changes.
