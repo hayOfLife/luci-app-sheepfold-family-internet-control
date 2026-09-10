@@ -166,6 +166,7 @@ export const testCategories = Object.freeze({
   ],
   backend: [
     'legacyLogRuntime.test.mjs',
+    'logWriterRuntime.test.mjs',
     'adminNotificationRuntime.test.mjs',
     'childAccessRequestRuntime.test.mjs',
     'childRequestQueueRuntime.test.mjs',
@@ -326,6 +327,7 @@ export const testCategories = Object.freeze({
   ],
   security: [
     'legacyLogRuntime.test.mjs',
+    'logWriterRuntime.test.mjs',
     'childAccessRequestRuntime.test.mjs',
     'childRequestQueueRuntime.test.mjs',
     'backupRecoveryRegression.test.mjs',

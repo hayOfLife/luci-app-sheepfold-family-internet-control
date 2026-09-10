@@ -96,6 +96,15 @@ function controlText(ipkPath, memberPath) {
 }
 
 describe('test IPK executable permissions', () => {
+  it('ships the common journal boundary and connects both consumers', () => {
+    const ipk = buildTestIpk();
+    const base = './usr/libexec/sheepfold/';
+    assert.match(dataText(ipk, `${base}sheepfold-log-common`), /sheepfold_log_path_check\(\)/);
+    assert.match(dataText(ipk, `${base}sheepfold-log`), /\. "\$LOG_COMMON"/);
+    assert.match(dataText(ipk, `${base}sheepfold-api-legacy`), /sheepfold-log-common/);
+    assert.match(controlText(ipk, './postinst'), /sheepfold-log-common/);
+  });
+
   it('ships router-control-legacy as executable in data.tar.gz', () => {
     const ipkPath = buildTestIpk();
     const mode = tarMode(

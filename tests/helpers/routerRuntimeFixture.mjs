@@ -39,7 +39,7 @@ export function createRouterFixture(values = {}) {
   };
   const names = ['sheepfold-firewall', 'sheepfold-client-status-effective', 'sheepfold-api-client-status',
     'sheepfold-api-legacy', 'sheepfold-schedule-evaluator', 'sheepfold-lib-access-policy',
-    'sheepfold-lib-form', 'sheepfold-hash-common', 'sheepfold-lock-common'];
+    'sheepfold-lib-form', 'sheepfold-hash-common', 'sheepfold-lock-common', 'sheepfold-log-common'];
   for (const name of names) {
     let body = readFileSync(join(runtimeRoot, name), 'utf8')
       .replaceAll('/usr/libexec/sheepfold', shellPath(bin))

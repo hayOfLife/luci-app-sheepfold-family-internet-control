@@ -38,6 +38,14 @@ describe('change impact advisor §impact1', () => {
     assert.ok(!recommendedCommands(report).automatic.includes(command));
   });
 
+  it('selects both consumers and packaging for the shared journal path', () => {
+    const report = inspectChanges(['package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-log-common']);
+    assert.deepEqual(report.unknown, []);
+    for (const name of ['logWriterRuntime.test.mjs', 'legacyLogRuntime.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']) {
+      assert.ok(report.directTests.includes(name), `missing direct consumer ${name}`);
+    }
+  });
+
   it('maps a shared API change to backend, Android, security and a full run', () => {
     const report = inspectChanges([
       'package/luci-app-sheepfold-family-internet-control/root/www/cgi-bin/sheepfold-api',

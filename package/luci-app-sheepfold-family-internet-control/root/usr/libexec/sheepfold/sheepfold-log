@@ -6,7 +6,9 @@ LOCK_COMMON="${SHEEPFOLD_LOCK_COMMON:-${0%/*}/sheepfold-lock-common}"
 . "$LOCK_COMMON"
 LOG_LOCK="${SHEEPFOLD_LOG_LOCK:-/tmp/sheepfold/log-maintenance.flock}"
 
-DEFAULT_LOG="/tmp/sheepfold/events.log"
+LOG_COMMON="${0%/*}/sheepfold-log-common"
+[ -r "$LOG_COMMON" ] || LOG_COMMON=/usr/libexec/sheepfold/sheepfold-log-common
+. "$LOG_COMMON"
 USB_MOUNT_POINT="/mnt/sheepfold-usb"
 USB_LOG_DIR="${USB_MOUNT_POINT}/sheepfold/logs"
 YANDEX_PUSH="/usr/libexec/sheepfold/sheepfold-yandex-disk"
@@ -17,14 +19,6 @@ GOOGLE_PUSH_LOCK="/tmp/sheepfold/.google-push.scheduled"
 GOOGLE_PUSH_STAMP="/tmp/sheepfold/.google-push.last"
 CLOUD_PUSH_INTERVAL=300
 MESSAGE="${*:-}"
-
-log_path() {
-        path="$(uci -q get sheepfold.global.log_cache_path 2>/dev/null || printf '%s' "$DEFAULT_LOG")"
-        case "$path" in
-                /tmp/*) printf '%s\n' "$path" ;;
-                *) printf '%s\n' "$DEFAULT_LOG" ;;
-        esac
-}
 
 log_storage_backend() {
         uci -q get sheepfold.global.log_storage 2>/dev/null || printf ram
@@ -40,7 +34,7 @@ mirror_to_usb() {
 
         grep -q " ${USB_MOUNT_POINT} " /proc/mounts 2>/dev/null || return 0
         mkdir -p "$USB_LOG_DIR" 2>/dev/null || return 0
-        printf '%s\n' "$line" >> "${USB_LOG_DIR}/events.log"
+        printf '%s\n' "$line" >> "${USB_LOG_DIR}/events.log" || return 1
         chmod 600 "${USB_LOG_DIR}/events.log" 2>/dev/null || true
 }
 
@@ -68,14 +62,17 @@ schedule_yandex_push() {
                 return 0
         fi
 
-        mkdir -p /tmp/sheepfold 2>/dev/null || true
-        : >"$YANDEX_PUSH_LOCK"
+        mkdir -p /tmp/sheepfold 2>/dev/null || return 1
+        : >"$YANDEX_PUSH_LOCK" || return 1
 
         (
+                # Облачная копия не владеет FD 9 вызывающего CGI/очереди.
+                # Закрываем только свою копию FD, не снимаем чужой flock -u.
+                exec 9>&-
                 "$YANDEX_PUSH" push-events >/dev/null 2>&1 || true
                 date +%s >"$YANDEX_PUSH_STAMP" 2>/dev/null || true
                 rm -f "$YANDEX_PUSH_LOCK"
-        ) &
+        ) </dev/null >/dev/null 2>&1 &
 }
 
 schedule_google_push() {
@@ -102,36 +99,66 @@ schedule_google_push() {
                 return 0
         fi
 
-        mkdir -p /tmp/sheepfold 2>/dev/null || true
-        : >"$GOOGLE_PUSH_LOCK"
+        mkdir -p /tmp/sheepfold 2>/dev/null || return 1
+        : >"$GOOGLE_PUSH_LOCK" || return 1
 
         (
+                exec 9>&-
                 "$GOOGLE_PUSH" push-events >/dev/null 2>&1 || true
                 date +%s >"$GOOGLE_PUSH_STAMP" 2>/dev/null || true
                 rm -f "$GOOGLE_PUSH_LOCK"
-        ) &
+        ) </dev/null >/dev/null 2>&1 &
 }
 
 [ -n "$MESSAGE" ] || exit 0
 
-LOG_FILE="$(log_path)"
-LOG_DIR="${LOG_FILE%/*}"
-mkdir -p "$LOG_DIR"
-chmod 700 "$LOG_DIR" 2>/dev/null || true
-
-SAFE_MESSAGE="$(printf '%s' "$MESSAGE" | tr '\r\n\t' '   ' | cut -c1-4096)"
-LINE="$(printf '%s\t%s' "$(date '+%d.%m.%Y %H:%M:%S')" "$SAFE_MESSAGE")"
+# Стадии проверяются отдельно: успешный cut не подтверждает успешный tr.
+# Путь и файл не меняются, если содержимое/время события ещё не подготовлено.
+if ! SAFE_MESSAGE="$(printf '%s' "$MESSAGE" | tr '\r\n\t' '   ')" ||
+   ! SAFE_MESSAGE="$(printf '%s' "$SAFE_MESSAGE" | cut -c1-4096)" ||
+   ! EVENT_TIME="$(date '+%d.%m.%Y %H:%M:%S')" || [ -z "$EVENT_TIME" ]; then
+        logger -t sheepfold "Could not prepare Sheepfold event log record" >/dev/null 2>&1 || true
+        exit 1
+fi
+LINE="$(printf '%s\t%s' "$EVENT_TIME" "$SAFE_MESSAGE")"
 append_log_line() (
+        local log_file log_dir
+        log_file="$(sheepfold_log_path_read)" || return 1
+        sheepfold_log_path_check "$log_file" allow-missing || return 1
+        # Закрытая маска действует и при создании корня/lock/helper-потомков.
+        umask 077
         sheepfold_lock_acquire "$LOG_LOCK" 5 || return 1
-        trap 'sheepfold_lock_release' EXIT HUP INT TERM
-        printf '%s\n' "$LINE" >> "$LOG_FILE"
-        chmod 600 "$LOG_FILE" 2>/dev/null || true
-        mirror_to_usb "$LINE"
+        trap 'sheepfold_lock_release' EXIT
+        trap 'exit 1' HUP INT TERM
+        log_file="$(sheepfold_log_path_read)" || return 1
+        sheepfold_log_path_check "$log_file" allow-missing || return 1
+        log_dir="${log_file%/*}"
+        mkdir -p "$log_dir" || return 1
+        sheepfold_log_path_check "$log_file" || return 1
+        chmod 700 "$log_dir" || return 1
+        # Сначала права существующего файла, потом добавление. При отказе
+        # нельзя писать в него и маскировать ошибку успешным USB/no-op.
+        if [ -e "$log_file" ]; then chmod 600 "$log_file" || return 1; fi
+        printf '%s\n' "$LINE" >> "$log_file" || return 1
+        # USB — дополнительная копия. Её отказ не отменяет уже записанный RAM.
+        if ! mirror_to_usb "$LINE" >/dev/null 2>&1; then
+                logger -t sheepfold "Could not mirror Sheepfold event log to USB" >/dev/null 2>&1 || true
+        fi
 )
 if ! append_log_line; then
-        logger -t sheepfold "Could not append Sheepfold event log under lock" 2>/dev/null || true
+        logger -t sheepfold "Could not append Sheepfold event log under lock" >/dev/null 2>&1 || true
+        logger -t sheepfold "$SAFE_MESSAGE" >/dev/null 2>&1 || true
+        exit 1
 fi
-logger -t sheepfold "$SAFE_MESSAGE" 2>/dev/null || true
+logger -t sheepfold "$SAFE_MESSAGE" >/dev/null 2>&1 || true
 
-schedule_yandex_push
-schedule_google_push
+# Успех означает RAM-запись, не подтверждение облачной доставки.
+# Subshell изолирует и фатальный redirection special builtin, и сохранённые
+# shell-дескрипторы: redirect самой функции оставлял скрытую копию CGI-pipe.
+if ! (schedule_yandex_push) >/dev/null 2>&1; then
+        logger -t sheepfold "Could not schedule Yandex event log copy" >/dev/null 2>&1 || true
+fi
+if ! (schedule_google_push) >/dev/null 2>&1; then
+        logger -t sheepfold "Could not schedule Google event log copy" >/dev/null 2>&1 || true
+fi
+exit 0

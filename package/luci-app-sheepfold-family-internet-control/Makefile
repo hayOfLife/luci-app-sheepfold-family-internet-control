@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-sheepfold-family-internet-control
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=301
+PKG_RELEASE:=302
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=kva4991
 SHEEPFOLD_UI_ASSET_VERSION:=$(PKG_VERSION)-$(PKG_RELEASE)
@@ -553,6 +553,7 @@ for library in \
 	/usr/libexec/sheepfold/sheepfold-token-common \
 	/usr/libexec/sheepfold/sheepfold-hash-common \
 	/usr/libexec/sheepfold/sheepfold-lock-common \
+	/usr/libexec/sheepfold/sheepfold-log-common \
 	/usr/libexec/sheepfold/sheepfold-lib-form \
 	/usr/libexec/sheepfold/sheepfold-lib-access-policy \
 	/usr/libexec/sheepfold/sheepfold-lib-admin-config-common \

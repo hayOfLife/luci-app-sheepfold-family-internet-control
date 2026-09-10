@@ -33,6 +33,8 @@ describe('Installed rootfs hardening after shared-helper refactors', () => {
     assert.equal(result.status, 0, result.stderr);
   });
   for (const [name, mutate] of [
+    ['missing log path library', ({ runtime }) => rmSync(join(runtime, 'sheepfold-log-common'))],
+    ['broken log path library syntax', ({ edit }) => edit('sheepfold-log-common', (s) => s + '\nif then\n')],
     ['missing shared policy', ({ runtime }) => rmSync(join(runtime, 'sheepfold-lib-access-policy'))],
     ['disconnected policy import', ({ edit }) => edit('sheepfold-client-status-effective', (s) => s.replace('. "$POLICY_COMMON"', ':'))],
     ['disconnected policy evaluator', ({ edit }) => edit('sheepfold-client-status-effective', (s) => s.replace('sheepfold_policy_evaluate "$device_section" "$client_mac"', ':'))],

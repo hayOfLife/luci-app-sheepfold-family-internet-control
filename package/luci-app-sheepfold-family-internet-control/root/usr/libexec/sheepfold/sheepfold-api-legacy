@@ -368,43 +368,16 @@ global_block_json() {
 	printf '{"app":"sheepfold","ok":true,"globalBlock":"%s"}\n' "$(json_escape "$action_label")"
 }
 
-# Журнал — только обычный файл внутри ожидаемого RAM-каталога. Проверка
-# строкового префикса недостаточна: «..» и symlink могли читать/очищать иной файл.
-# Это не openat/O_NOFOLLOW и не защита от root, подменяющего путь после проверки.
+# Writer и API используют одну границу пути; новые обработчики не должны
+# возвращать старую проверку одного строкового префикса.
 log_path_checked() {
-	local root rest part current config probe_status
-	root=/tmp/sheepfold
-	if ! log_file="$(uci -q get sheepfold.global.log_cache_path 2>/dev/null)"; then
-		# У UCI один nonzero и для отсутствующего ключа, и для ошибки. Default
-		# допустим только после успешного чтения, подтверждающего отсутствие опции.
-		config="$(uci -q show sheepfold 2>/dev/null)" || return 1
-		probe_status=0
-		printf '%s\n' "$config" | grep -q '^sheepfold\.global\.log_cache_path=' || probe_status=$?
-		[ "$probe_status" = 1 ] || return 1
-		log_file="$root/events.log"
-	fi
-	[ -n "$log_file" ] || log_file="$root/events.log"
-	case "$log_file" in "$root"/*) ;; *) return 1 ;; esac
-	[ ! -L "$root" ] || return 1
-	[ ! -e "$root" ] || [ -d "$root" ] || return 1
-	current="$root"
-	rest="${log_file#"$root"/}"
-	while :; do
-		part="${rest%%/*}"
-		case "$part" in ''|.|..) return 1 ;; esac
-		current="$current/$part"
-		[ ! -L "$current" ] || return 1
-		case "$rest" in
-			*/*)
-				[ -d "$current" ] || return 1
-				rest="${rest#*/}"
-				;;
-			*)
-				[ ! -e "$current" ] || [ -f "$current" ] || return 1
-				return 0
-				;;
-		esac
-	done
+    local common
+    common="${0%/*}/sheepfold-log-common"
+    [ -r "$common" ] || common=/usr/libexec/sheepfold/sheepfold-log-common
+    [ -r "$common" ] || return 1
+    . "$common"
+    log_file="$(sheepfold_log_path_read)" || return 1
+    sheepfold_log_path_check "$log_file"
 }
 
 # Каждый caller ниже работает в subshell: FD 9 и переменные lock-helper не

@@ -1,0 +1,48 @@
+#!/bin/sh
+# Один контракт RAM-пути для записи и API: ошибка UCI не означает отсутствие
+# настройки, а префикс пути не защищает от «..» и символических ссылок.
+# Это проверка согласованных процессов, не openat/O_NOFOLLOW против root-race.
+sheepfold_log_path_read() {
+    local path config probe_status
+    if ! path="$(uci -q get sheepfold.global.log_cache_path 2>/dev/null)"; then
+        config="$(uci -q show sheepfold 2>/dev/null)" || return 1
+        probe_status=0
+        printf '%s\n' "$config" | grep -q '^sheepfold\.global\.log_cache_path=' || probe_status=$?
+        [ "$probe_status" = 1 ] || return 1
+        path=/tmp/sheepfold/events.log
+    fi
+    [ -n "$path" ] || path=/tmp/sheepfold/events.log
+    printf '%s\n' "$path"
+}
+
+sheepfold_log_path_check() {
+    local root rest part current path missing
+    root=/tmp/sheepfold
+    path="$1"
+    missing="${2:-existing}"
+    case "$path" in "$root"/*) ;; *) return 1 ;; esac
+    [ ! -L "$root" ] || return 1
+    [ ! -e "$root" ] || [ -d "$root" ] || return 1
+    current="$root"
+    rest="${path#"$root"/}"
+    while :; do
+        part="${rest%%/*}"
+        case "$part" in ''|.|..) return 1 ;; esac
+        current="$current/$part"
+        [ ! -L "$current" ] || return 1
+        case "$rest" in
+            */*)
+                if [ -e "$current" ]; then
+                    [ -d "$current" ] || return 1
+                else
+                    [ "$missing" = allow-missing ] || return 1
+                fi
+                rest="${rest#*/}"
+                ;;
+            *)
+                [ ! -e "$current" ] || [ -f "$current" ] || return 1
+                return 0
+                ;;
+        esac
+    done
+}

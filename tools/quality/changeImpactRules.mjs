@@ -69,6 +69,7 @@ const routerRuntimeConsumers = Object.freeze([
   'adminNotificationRuntime.test.mjs',
   'apiFormRuntime.test.mjs',
   'legacyLogRuntime.test.mjs',
+  'logWriterRuntime.test.mjs',
   'apiRateLimitRuntime.test.mjs',
   'childAccessRequestRuntime.test.mjs',
   'childRequestQueueRuntime.test.mjs',
@@ -96,6 +97,17 @@ const controlRuntimeConsumers = Object.freeze([
 ]);
 
 export const impactRules = Object.freeze([
+  Object.freeze({
+    id: 'journalPathBoundary',
+    area: 'Общий RAM-путь журнала',
+    pattern: /sheepfold-log-common$/,
+    categories: ['backend', 'security', 'packaging'],
+    checks: ['routerReadOnly'],
+    risk: 'high',
+    directTests: Object.freeze(['legacyLogRuntime.test.mjs', 'logWriterRuntime.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']),
+    review: 'Проверить оба потребителя RAM-пути, права/lock, отказы UCI и наличие общей библиотеки в обеих редакциях; облачный транспорт — отдельная граница.',
+  }),
+
   Object.freeze({
     id: 'remoteSupportProtocol',
     area: 'Экспериментальный public/private support contract',

@@ -1,5 +1,14 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-10, **r302**, based on `0238869` (r301).
+B76–B78 unify writer/API RAM-path validation, verify primary record writes and
+isolate background cloud descriptors. The [78-card register](bug-register.ru.md)
+and [r302 report](audit-fixes-r302.ru.md) distinguish local runtime evidence from
+live delivery. Android, workflows, runner and access policy remain unchanged.
+R13 still covers maintenance/install/cloud readers, byte limits and durable delivery.
+
+Historical continuation:
+
 Focused continuation: 2026-09-10, **r301**, based on `fcd2dc7` (r300).
 B72–B75 fix the existing RAM-log API: read/masking/UCI failures, path boundaries,
 JSON encoding, and coordinated read/clear with the existing writer lock.
