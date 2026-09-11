@@ -1064,17 +1064,56 @@ upload_and_verify() (
 	printf '%s\n' "$verify_json"
 )
 
-create_config_backup() {
-	local backup_file
-	mkdir -p "$BACKUP_STAGING"
-	backup_file="$BACKUP_STAGING/sheepfold-config-$(date +%Y%m%d-%H%M%S).tar.gz"
+# Секундное имя сохраняет внешний формат, но не задаёт владельца временных
+# данных: config/events готовятся в закрытом каталоге одной операции.
+drive_archive_stamp() {
+	local stamp
+	stamp="$(date +%Y%m%d-%H%M%S)" || return 1
+	case "$stamp" in
+		[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+		*) return 1 ;;
+	esac
+	printf '%s' "$stamp"
+}
+
+create_config_backup() (
+	work="${1:-}"
+	[ -n "$work" ] && [ -d "$work" ] && [ ! -L "$work" ] || exit 1
+	umask 077
+	[ -f /etc/config/sheepfold ] && [ ! -L /etc/config/sheepfold ] || exit 1
+	mkdir "$work/config-source" || exit 1
+	cp -p /etc/config/sheepfold "$work/config-source/sheepfold" || exit 1
+	chmod 600 "$work/config-source/sheepfold" || exit 1
+	cmp -s /etc/config/sheepfold "$work/config-source/sheepfold" || exit 1
+	stamp="$(drive_archive_stamp)" || exit 1
+	backup_file="$work/sheepfold-config-$stamp.tar.gz"
 	if command -v gzip >/dev/null 2>&1; then
-		tar -C /etc/config -czf "$backup_file" sheepfold 2>/dev/null || return 1
+		tar -C "$work/config-source" -czf "$backup_file" sheepfold || exit 1
+		list_flags=-tzf
+		read_flags=-xzOf
 	else
 		backup_file="${backup_file%.gz}"
-		tar -C /etc/config -cf "$backup_file" sheepfold 2>/dev/null || return 1
+		tar -C "$work/config-source" -cf "$backup_file" sheepfold || exit 1
+		list_flags=-tf
+		read_flags=-xOf
 	fi
+	chmod 600 "$backup_file" || exit 1
+	# Проверяется собственный архив одного файла, не включается импорт.
+	# Извлечение в stdout не применяет пути/права архива к роутеру.
+	members="$(tar "$list_flags" "$backup_file")" || exit 1
+	[ "$members" = sheepfold ] || exit 1
+	tar "$read_flags" "$backup_file" sheepfold >"$work/config-verified" || exit 1
+	cmp -s "$work/config-source/sheepfold" "$work/config-verified" || exit 1
+	[ ! -L /etc/config/sheepfold ] || exit 1
+	cmp -s /etc/config/sheepfold "$work/config-source/sheepfold" || exit 1
 	printf '%s' "$backup_file"
+)
+
+# Отказ диагностики не должен мешать вернуть исходную ошибку подготовки.
+drive_archive_prepare_error() {
+	write_sync_status archive-push false "completed with errors" >/dev/null 2>&1 || :
+	printf '{"ok":false,"error":"%s","pushed":0,"errors":1}\n' "$1"
+	return 1
 }
 
 cmd_test() {
@@ -1435,13 +1474,37 @@ cmd_push_events() (
 )
 
 cmd_archive_push() (
-	local logs_id backups_id quota quota_bytes pushed errors archive events_copy backup_file
+	local logs_id backups_id quota quota_bytes pushed errors archive events_copy backup_file work stamp
 	[ "$(global_get log_storage ram)" = "google_drive" ] || return 0
 	# Старый флаг authorized не доказывает текущий доступ и не является
 	# согласием на загрузку. Его задаёт log_storage; токен проверит поиск папок.
 	require_tooling || return 1
 	drive_context_begin || return 1
 
+	umask 077
+	work="$(drive_workdir)" || { drive_archive_prepare_error backup_prepare_failed; return 1; }
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	# Проверяем local backup до удаления отправленных RAM-архивов и до
+	# облачных действий: подавленный tar-отказ раньше давал ложный ok=true.
+	backup_file="$(create_config_backup "$work")" || {
+		drive_archive_prepare_error backup_prepare_failed
+		return 1
+	}
+	events_copy=''
+	if [ -L "$EVENTS_LOG" ] || { [ -e "$EVENTS_LOG" ] && [ ! -f "$EVENTS_LOG" ]; }; then
+		drive_archive_prepare_error events_snapshot_failed
+		return 1
+	fi
+	if [ -f "$EVENTS_LOG" ]; then
+		stamp="$(drive_archive_stamp)" || { drive_archive_prepare_error events_snapshot_failed; return 1; }
+		events_copy="$work/events-$stamp.log"
+		cp "$EVENTS_LOG" "$events_copy" && chmod 600 "$events_copy" && cmp -s "$EVENTS_LOG" "$events_copy" || {
+			drive_archive_prepare_error events_snapshot_failed
+			return 1
+		}
+	fi
+	drive_context_check || return 1
 	cache_folder_ids || return 1
 	logs_id="$(folder_id_from_cache logs)" || return 1
 	backups_id="$(folder_id_from_cache backups)" || return 1
@@ -1463,10 +1526,7 @@ cmd_archive_push() (
 		fi
 	done
 
-	if [ -f "$EVENTS_LOG" ]; then
-		events_copy="$BACKUP_STAGING/events-$(date +%Y%m%d-%H%M%S).log"
-		mkdir -p "$BACKUP_STAGING"
-		cp "$EVENTS_LOG" "$events_copy"
+	if [ -n "$events_copy" ]; then
 		if upload_and_verify "$logs_id" "$events_copy" "$(basename "$events_copy")" >/dev/null 2>&1; then
 			drive_context_check || return 1
 			pushed=$((pushed + 1))
@@ -1474,19 +1534,14 @@ cmd_archive_push() (
 			drive_context_check || return 1
 			errors=$((errors + 1))
 		fi
-		rm -f "$events_copy"
 	fi
 
-	backup_file="$(create_config_backup 2>/dev/null || true)"
-	if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
-		if upload_and_verify "$backups_id" "$backup_file" "$(basename "$backup_file")" >/dev/null 2>&1; then
-			drive_context_check || return 1
-			pushed=$((pushed + 1))
-		else
-			drive_context_check || return 1
-			errors=$((errors + 1))
-		fi
-		rm -f "$backup_file"
+	if upload_and_verify "$backups_id" "$backup_file" "$(basename "$backup_file")" >/dev/null 2>&1; then
+		drive_context_check || return 1
+		pushed=$((pushed + 1))
+	else
+		drive_context_check || return 1
+		errors=$((errors + 1))
 	fi
 
 	drive_context_check || return 1

@@ -835,3 +835,23 @@ workflow/runner не менялись; полный suite и несвязанн�
 моделями. Pending и committed проверяются отдельно, а создание облачных папок — по
 HTTP-трассе. Это не native UCI или реальные облачные объекты. Команды, выбор соседних
 тестов и ограничения: [отчёт r311](audit-fixes-r311.ru.md).
+
+
+## Локальная подготовка config/events Google Drive (r312)
+
+Из корня checkout в Linux с Node.js, Python 3, POSIX sh, tar/gzip, cp/cmp;
+для отдельного контроля формата нужен установленный BusyBox:
+
+```sh
+node --test --test-name-pattern='Google Drive local archive snapshots|Google Drive archive format controls' tests/googleDriveUploadRuntime.test.mjs
+```
+
+Ожидается exit 0, **29 pass, 0 fail/skip**. Изменяются только синтетические fixtures
+в `.build`, cleanup удаляет их после теста. Tar, cp/cmp — реальные; HTTP, UCI, jshn —
+модели. При искусственных отказах проверяется вызов подставленной команды. BusyBox tar
+проверяется отдельно, не используется для обходящего PATH fault-injection.
+
+Не запускать production archive-push от root на рабочем роутере вместо fixture:
+команда может удалять уже отправленные архивы. Полный состав соседних проверок,
+исходные отказы, ограничения среды и результаты — [отчёт r312](audit-fixes-r312.ru.md).
+Успех не подтверждает native UCI, flash, реальный Google или восстановление устройства.

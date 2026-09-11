@@ -11,6 +11,8 @@
  * остановка после ошибки DELETE. Все удаляемые объекты существуют только в HTTP-модели.
  * r311: status не сохраняет UCI-черновик и не создаёт облачные папки;
  * явная архивная отправка проверяет текущие реквизиты, не старый флаг.
+ * r312: реальные tar/cp/cmp проверяют config/events до отправки; закрытые
+ * каталоги одной операции не подменяют оставленные файлы другой операции.
  * Подмена источника повторяет те же assertions на предыдущей версии.
  */
 import assert from 'node:assert/strict';
@@ -54,7 +56,13 @@ function fixture(t, options = {}) {
     .replaceAll('/usr/share/libubox/jshn.sh', path(join(bin, 'jshn.sh')))
     .replaceAll('/etc/init.d/sheepfold', path(join(root, 'no-service'))));
   const archive = join(archiveDir, 'synthetic.tar'); writeFileSync(archive, payload);
-  // Новый config backup не создаётся: проверяется уже существующий архив.
+  // Реальный config нужен для проверки обязательного backup. Его отсутствие
+  // раньше скрывало подавленный отказ tar в положительных архивных сценариях.
+  const configFile=join(config,'sheepfold');
+  if (options.configPresent !== false) {
+    writeFileSync(configFile,options.configContent ?? "config global 'global'\n\toption synthetic 'only-test'\n");
+    chmodSync(configFile,0o600);
+  }
   const defaults = { client_id: 'synthetic', client_secret: '', refresh_token: 'synthetic', root_folder: '/sheepfold', quota_mb: '500', authorized: '1' };
   const creds = { ...defaults, ...options.credentials };
   const authKey = (values) => createHash('sha256').update(['client_id','client_secret','refresh_token']
@@ -107,8 +115,14 @@ kind='other'
 if 'oauth2' in url:
  kind='token'; body=opts.get('tokenBody','{"access_token":"synthetic-token","expires_in":3600,"token_type":"Bearer"}'); http=str(opts.get('tokenHttp',200)); exitcode=opts.get('tokenExit',0)
 elif '/upload/' in url:
+ if opts.get('currentRemoteName','').startswith('sheepfold-config-'):
+  raw=pathlib.Path(arg('--data-binary')[1:]).read_bytes()
+  marker=b'Content-Type: application/octet-stream\\r\\n\\r\\n'
+  content=raw.split(marker,1)[1].rsplit(b'\\r\\n--',1)[0] if marker in raw else raw
+  opts['backupUploadSize']=len(content)
+  pathlib.Path(os.environ['GDRIVE_OPTIONS']).write_text(json.dumps(opts))
  kind='upload'; http=str(opts.get('uploadHttp',200)); exitcode=opts.get('uploadExit',0)
- body=json.dumps({'id':'file1','size':str(opts['remoteSize'])}, separators=(',',':'))
+ body=json.dumps({'id':'file1','size':str(opts.get('backupUploadSize',opts['remoteSize']))}, separators=(',',':'))
  if opts.get('createBody') is not None: body=opts['createBody']
 elif method=='DELETE' and '/drive/v3/files/' in url:
  kind='delete'; file_id=urllib.parse.urlsplit(url).path.rsplit('/',1)[-1]
@@ -123,7 +137,7 @@ elif '/drive/v3/files/' in url and query.get('alt')==['media']:
  pathlib.Path(os.environ['GDRIVE_OPTIONS']).write_text(json.dumps(opts))
 elif '/files/file1' in url:
  kind='metadata'; http=str(opts.get('metadataHttp',200)); exitcode=opts.get('metadataExit',0)
- body=opts.get('metadataBody',json.dumps({'id':opts.get('metadataId','file1'),'size':str(opts['remoteSize'])},indent=2))
+ body=opts.get('metadataByName',{}).get(opts.get('currentRemoteName',''),opts.get('metadataBody',json.dumps({'id':opts.get('metadataId','file1'),'size':str(opts.get('backupUploadSize',opts['remoteSize']))},indent=2)))
  if opts.get('downloaded'):
   body=opts.get('postMetadataBody',body); http=str(opts.get('postMetadataHttp',http)); exitcode=opts.get('postMetadataExit',exitcode)
 elif ' in parents' in search and not search.startswith('name='):
@@ -138,6 +152,10 @@ elif ' in parents' in search and not search.startswith('name='):
 elif search.startswith("name="):
  folder="mimeType='application/vnd.google-apps.folder'" in search
  kind='folderLookup' if folder else 'lookup'
+ if not folder:
+  opts['currentRemoteName']=search.split("'")[1]
+  opts.pop('backupUploadSize',None)
+  pathlib.Path(os.environ['GDRIVE_OPTIONS']).write_text(json.dumps(opts))
  folder_id='backup1' if search.startswith("name='backups'") else 'folder1' if search.startswith("name='logs'") else 'root1'
  default='{"files":[]}' if opts.get('emptyFolders' if folder else 'newFile') else (json.dumps({'files':[{'id':folder_id,'name':'folder'}]}) if folder else '{"files":[{"id":"file1","name":"synthetic.tar","size":"25"}]}')
  body=opts.get(kind+'Body',default).replace('@folderId@',folder_id); http=str(opts.get(kind+'Http',200)); exitcode=opts.get(kind+'Exit',0)
@@ -151,7 +169,7 @@ elif method=='POST' and '/drive/v3/files' in url:
  folder_id='backup1' if metadata.get('name')=='backups' else 'folder1' if metadata.get('name')=='logs' else 'root1'
  body=opts.get('folderCreateBody',json.dumps({'id':folder_id})).replace('@folderId@',folder_id); http=str(opts.get('folderCreateHttp',200)); exitcode=opts.get('folderCreateExit',0)
 else: body='{"id":"folder1"}'
-event={'kind':kind,'method':method,'url':url,'http':http,'exit':exitcode,'auth':arg('-H'),'query':query}
+event={'kind':kind,'method':method,'url':url,'http':http,'exit':exitcode,'auth':arg('-H'),'query':query,'remoteName':opts.get('currentRemoteName','')}
 if kind=='token':
  parts=[]
  for i,option in enumerate(args):
@@ -242,7 +260,7 @@ except (ValueError,KeyError,IndexError,AssertionError,TypeError): sys.exit(1)
     return spawnSync('sh',[path(join(bin,'function-run')),name,...args],{cwd:repo,
       env:{...process.env,PATH:`${bin}:${process.env.PATH}`,GDRIVE_OPTIONS:path(settings),GDRIVE_TRACE:path(traceFile)},encoding:'utf8',timeout:20000});
   };
-  return { root, bin, ram, archive, path, put, run, call, fault, cacheFile, authKey, folderKey, creds,
+  return { root, bin, ram, archive, configFile, path, put, run, call, fault, cacheFile, authKey, folderKey, creds,
     update: (changes) => writeFileSync(settings, JSON.stringify({...JSON.parse(readFileSync(settings,'utf8')), ...changes})), trace: () => readFileSync(traceFile,'utf8').trim().split('\n').filter(Boolean).map((s) => JSON.parse(s)),
     leftovers: () => readdirSync(ram).filter((s) => /^\.gdrive-(?:upload|multipart|create-response)/.test(s)) };
 }
@@ -307,7 +325,7 @@ describe('Google Drive upload preparation',()=>{
 
 describe('Google Drive checks preparation before remote mutation',()=>{
   for (const name of ['cp','cmp','chmod','wc']) {
-    it(`preserves input and does not upload after ${name} failure`, (t)=>{
+    it(`preserves input and does not upload that source after ${name} failure`, (t)=>{
       const f=fixture(t);
       const predicate = name === 'cp' ? '[ "${1:-}" = '+q(f.path(f.archive))+' ]' :
         name === 'cmp' ? 'case "${3:-}" in */content) true;; *) false;; esac' :
@@ -315,7 +333,11 @@ describe('Google Drive checks preparation before remote mutation',()=>{
       f.fault(name,predicate,name === 'wc' ? 'printf 25; exit 7' : 'exit 7');
       const r=f.run(); assert.ok(f.trace().some((v)=>v.kind===`${name}-fault`),'fault not injected');
       failed(r); assert.ok(existsSync(f.archive));
-      assert.ok(!f.trace().some((v)=>v.kind==='upload'),'unprepared data reached upload');
+      // Config-backup теперь реален: его независимая отправка допустима.
+      // Проверяем именно отсутствие повреждённого source, не отсутствие всех uploads.
+      const uploads=f.trace().filter((v)=>v.kind==='upload');
+      assert.ok(uploads.every((v)=>v.remoteName.startsWith('sheepfold-config-')),'failed source reached upload');
+      assert.ok(uploads.every((v)=>!Buffer.from(v.bytes,'hex').equals(Buffer.from(payload))));
       assert.deepEqual(f.leftovers(),[]);
     });
   }
@@ -341,7 +363,7 @@ describe('Google Drive checks preparation before remote mutation',()=>{
     assert.ok(f.trace().some((v)=>v.kind==='metadata')); assert.deepEqual(f.leftovers(),[]);
   });
   it('normalizes a quoted decimal remote size', (t)=>{
-    const f=fixture(t,{metadataBody:'{ "id": "file1", "size": "00026" }'}); succeeded(f.run()); assert.equal(existsSync(f.archive),false);
+    const f=fixture(t,{metadataByName:{'synthetic.tar':'{ "id": "file1", "size": "00026" }'}}); succeeded(f.run()); assert.equal(existsSync(f.archive),false);
   });
   it('accepts a zero-byte journal when the remote size is zero', (t)=>{
     const f=fixture(t,{remoteSize:0}); rmSync(f.archive); writeFileSync(join(f.ram,'events.log'),'');
@@ -1269,5 +1291,127 @@ path.write_text(json.dumps(state))
     const f=fixture(t,{credentials:{authorized:'0'},emptyFolders:true});configStore(f,true);
     const r=f.run();succeeded(r);assert.ok(f.trace().some((v)=>v.kind==='folderCreate'));assert.ok(f.trace().some((v)=>v.kind==='upload'));
     assert.equal(f.trace().filter((v)=>v.kind==='uci-write').length,0);
+  });
+});
+
+// Настоящие tar/cp/cmp; изолированные пути и модели HTTP/UCI, без сети.
+describe('Google Drive local archive snapshots',()=>{
+  const noUpload=(f)=>assert.ok(!f.trace().some((v)=>v.kind==='upload'),'unprepared snapshot reached upload');
+  const onlyConfig=(t,options={})=>{const f=fixture(t,options);rmSync(f.archive);return f;};
+  it('uploads a checked real configuration archive with the exact member',(t)=>{
+    const f=onlyConfig(t),expected=readFileSync(f.configFile,'utf8');const r=f.run();succeeded(r);
+    const upload=f.trace().find((v)=>v.kind==='upload');assert.ok(upload);
+    const out=join(f.root,'uploaded.tar.gz');writeFileSync(out,Buffer.from(upload.bytes,'hex'));
+    const listing=spawnSync('tar',['-tzf',out],{encoding:'utf8'});succeeded(listing);assert.equal(listing.stdout,'sheepfold\n');
+    const content=spawnSync('tar',['-xzOf',out,'sheepfold'],{encoding:'utf8'});succeeded(content);assert.equal(content.stdout,expected);
+    assert.equal(readFileSync(f.configFile,'utf8'),expected);assert.deepEqual(f.leftovers(),[]);
+  });
+  it('does not report config upload success with a wrong remote size',(t)=>{
+    const f=onlyConfig(t,{metadataBody:'{"id":"file1","size":"1"}'});
+    const before=readFileSync(f.configFile);const r=f.run();failed(r);
+    assert.ok(f.trace().some((v)=>v.kind==='metadata'),'remote verification was not reached');
+    assert.equal(JSON.parse(r.stdout).ok,false);assert.deepEqual(readFileSync(f.configFile),before);
+  });
+  for(const mode of ['absent','directory','symlink']) it(`does not report archive success for ${mode} configuration`,{skip:!native},(t)=>{
+    const f=onlyConfig(t);rmSync(f.configFile);
+    if(mode==='directory') mkdirSync(f.configFile);
+    if(mode==='symlink'){const outside=join(f.root,'outside');writeFileSync(outside,'not config');symlinkSync(outside,f.configFile);}
+    const r=f.run();failed(r);noUpload(f);assert.deepEqual(f.leftovers(),[]);
+    assert.equal(JSON.parse(readFileSync(join(f.ram,'.gdrive-sync-status.json'),'utf8')).ok,false);
+  });
+  for(const kind of ['exit','partial','invalid-success']) it(`does not hide tar creation ${kind}`,(t)=>{
+    const f=fixture(t);f.fault('tar','case " $* " in *" -czf "*|*" -cf "*) true;; *) false;; esac',
+      `${kind!=='exit'?'printf broken >"$4"; ':''}exit ${kind==='invalid-success'?0:7}`);
+    const r=f.run();assert.ok(f.trace().some((v)=>v.kind==='tar-fault'));failed(r);
+    assert.ok(existsSync(f.archive),'archive deleted before backup preparation');noUpload(f);assert.deepEqual(f.leftovers(),[]);
+    assert.equal(JSON.parse(r.stdout).error,'backup_prepare_failed');
+  });
+  for(const utility of ['cp','cmp','chmod']) it(`rejects config snapshot ${utility} failure before uploading`,(t)=>{
+    const f=fixture(t);const condition=utility==='cp'?'case " $* " in *"/config/sheepfold "*) true;; *) false;; esac':
+      'case " $* " in *"/config-source/sheepfold"*) true;; *) false;; esac';
+    f.fault(utility,condition,'exit 7');const r=f.run();assert.ok(f.trace().some((v)=>v.kind===utility+'-fault'));failed(r);noUpload(f);
+    assert.ok(existsSync(f.archive));assert.deepEqual(f.leftovers(),[]);
+  });
+  it('rejects a copy that returns success with different bytes',(t)=>{
+    const f=fixture(t);f.fault('cp','case " $* " in *"/config/sheepfold "*) true;; *) false;; esac','for target do :; done; printf wrong >"$target"; exit 0');
+    const r=f.run();assert.ok(f.trace().some((v)=>v.kind==='cp-fault'));failed(r);noUpload(f);assert.ok(existsSync(f.archive));
+  });
+  for(const phase of ['list','read']) it(`requires successful archive ${phase} verification`,(t)=>{
+    const f=fixture(t);const match=phase==='list'?'*-tzf*|*-tf*':'*-xzOf*|*-xOf*';
+    f.fault('tar',`case " $* " in ${match}) true;; *) false;; esac`,'printf sheepfold; exit 7');
+    const r=f.run();assert.ok(f.trace().some((v)=>v.kind==='tar-fault'));failed(r);noUpload(f);assert.ok(existsSync(f.archive));
+  });
+  it('does not accept successful extraction of wrong content',(t)=>{
+    const f=fixture(t);f.fault('tar','case " $* " in *-xzOf*|*-xOf*) true;; *) false;; esac','printf wrong; exit 0');
+    const r=f.run();assert.ok(f.trace().some((v)=>v.kind==='tar-fault'));failed(r);noUpload(f);
+  });
+  for(const output of ['','bad-date','20260911-180000']) it(`rejects unconfirmed timestamp ${JSON.stringify(output)}`,(t)=>{
+    const f=fixture(t);f.fault('date','[ "${1:-}" = +%Y%m%d-%H%M%S ]',`printf '%s' ${q(output)}; exit 7`);
+    const r=f.run();assert.ok(f.trace().some((v)=>v.kind==='date-fault'));failed(r);noUpload(f);
+  });
+  it('leaves an existing same-second staging backup untouched',(t)=>{
+    const f=onlyConfig(t);const staging=join(f.ram,'.gdrive-backup-staging');mkdirSync(staging);
+    const older=join(staging,'sheepfold-config-20260911-180000.tar.gz');writeFileSync(older,'older emergency data');
+    f.fault('date','[ "${1:-}" = +%Y%m%d-%H%M%S ]',"printf 20260911-180000; exit 0");
+    const r=f.run();succeeded(r);assert.equal(readFileSync(older,'utf8'),'older emergency data');
+  });
+  it('does not follow old staging symlinks',{skip:!native},(t)=>{
+    const f=onlyConfig(t),other=join(f.root,'other');mkdirSync(other);symlinkSync(other,join(f.ram,'.gdrive-backup-staging'));
+    const previous=join(other,'sheepfold-config-20260911-180000.tar.gz');writeFileSync(previous,'keep');
+    f.fault('date','[ "${1:-}" = +%Y%m%d-%H%M%S ]',"printf 20260911-180000; exit 0");
+    const r=f.run();succeeded(r);assert.equal(readFileSync(previous,'utf8'),'keep');
+  });
+  it('does not upload if config changes during archive creation',(t)=>{
+    const f=fixture(t),real=spawnSync('sh',['-c','command -v tar'],{encoding:'utf8'}).stdout.trim();
+    f.fault('tar','case " $* " in *" -czf "*|*" -cf "*) true;; *) false;; esac',
+      `${q(real)} "$@" || exit $?; printf 'newer config' >${q(f.path(f.configFile))}; exit 0`);
+    const r=f.run();assert.ok(f.trace().some((v)=>v.kind==='tar-fault'));failed(r);noUpload(f);assert.equal(readFileSync(f.configFile,'utf8'),'newer config');
+  });
+  for(const kind of ['exit','partial-success']) it(`stops on events copy ${kind}`,(t)=>{
+    const f=fixture(t);writeFileSync(join(f.ram,'events.log'),payload);
+    f.fault('cp','[ "${1:-}" = '+q(f.path(join(f.ram,'events.log')))+' ]',
+      `for target do :; done; printf partial >"$target"; exit ${kind==='exit'?7:0}`);
+    const r=f.run();assert.ok(f.trace().some((v)=>v.kind==='cp-fault'));failed(r);noUpload(f);assert.ok(existsSync(f.archive));assert.deepEqual(f.leftovers(),[]);
+  });
+  it('preserves an existing same-second events copy',(t)=>{
+    const f=onlyConfig(t);writeFileSync(join(f.ram,'events.log'),payload);const staging=join(f.ram,'.gdrive-backup-staging');mkdirSync(staging);
+    const previous=join(staging,'events-20260911-180000.log');writeFileSync(previous,'older journal');
+    f.fault('date','[ "${1:-}" = +%Y%m%d-%H%M%S ]',"printf 20260911-180000; exit 0");
+    const r=f.run();succeeded(r);assert.equal(readFileSync(previous,'utf8'),'older journal');assert.deepEqual(f.leftovers(),[]);
+  });
+});
+
+// Микропроверки формата/прав без HTTP: собственные файлы удаляет fixture.
+describe('Google Drive archive format controls',()=>{
+  const workspace=(f)=>{const work=join(f.root,'owned-work');mkdirSync(work,{mode:0o700});return work;};
+  it('creates the tar with 0600 before any later upload chmod',{skip:!native},(t)=>{
+    const f=fixture(t),work=workspace(f),real=spawnSync('sh',['-c','command -v tar'],{encoding:'utf8'}).stdout.trim();
+    f.fault('tar','case " $* " in *" -czf "*|*" -cf "*) true;; *) false;; esac',
+      `${q(real)} "$@" || exit $?; python3 -S -c 'import sys,os,json,stat;print(json.dumps({"kind":"archive-permissions","mode":stat.S_IMODE(os.stat(sys.argv[1]).st_mode)}))' "$4" >> "$GDRIVE_TRACE"; exit 0`);
+    const r=f.call('create_config_backup',[f.path(work)]);succeeded(r);
+    assert.equal(f.trace().find((v)=>v.kind==='archive-permissions').mode,0o600);
+    const file=r.stdout;assert.equal(statSync(file).mode&0o777,0o600);assert.equal(statSync(join(work,'config-source')).mode&0o777,0o700);
+  });
+  it('round-trips the generated archive with the installed BusyBox tar',{skip:!native},(t)=>{
+    const available=spawnSync('sh',['-c','command -v busybox'],{encoding:'utf8'});succeeded(available);assert.ok(available.stdout.trim());
+    const f=fixture(t),work=workspace(f);f.put('tar',`#!/bin/sh\nexec ${q(available.stdout.trim())} tar "$@"\n`);
+    const r=f.call('create_config_backup',[f.path(work)]);succeeded(r);
+    const extracted=spawnSync(available.stdout.trim(),['tar','-xzOf',r.stdout,'sheepfold'],{encoding:'utf8'});succeeded(extracted);
+    assert.equal(extracted.stdout,readFileSync(f.configFile,'utf8'));
+  });
+  it('preserves the no-gzip tar format and verifies it before return',(t)=>{
+    const f=fixture(t),work=workspace(f);
+    const r=f.call('eval',[`command() { if [ "$1" = -v ] && [ "$2" = gzip ]; then return 1; fi; command command "$@"; }; create_config_backup ${q(f.path(work))}`]);
+    succeeded(r);assert.ok(r.stdout.endsWith('.tar'));
+    const extracted=spawnSync('tar',['-xOf',r.stdout,'sheepfold'],{encoding:'utf8'});succeeded(extracted);assert.equal(extracted.stdout,readFileSync(f.configFile,'utf8'));
+  });
+  it('rejects an extra archive member even when extraction of sheepfold would match',(t)=>{
+    const f=fixture(t),work=workspace(f);f.fault('tar','case " $* " in *-tzf*|*-tf*) true;; *) false;; esac',"printf 'sheepfold\\nother\\n'; exit 0");
+    const r=f.call('create_config_backup',[f.path(work)]);failed(r);assert.ok(f.trace().some((v)=>v.kind==='tar-fault'));
+  });
+  it('rejects malformed successful time output before tar creation',(t)=>{
+    const f=fixture(t),work=workspace(f);f.fault('date','[ "${1:-}" = +%Y%m%d-%H%M%S ]',"printf incorrect; exit 0");
+    const r=f.call('create_config_backup',[f.path(work)]);failed(r);assert.ok(f.trace().some((v)=>v.kind==='date-fault'));
+    assert.deepEqual(readdirSync(work).filter((v)=>v.includes('.tar')),[]);
   });
 });
