@@ -124,6 +124,7 @@ uninstall.sh                                         удаление с роу�
 - [Подробный реестр ошибок и причин решений](docs/bug-register.ru.md)
 - [Аудит r306: точный поиск Drive и кэш папок](docs/audit-fixes-r306.ru.md)
 - [Аудит r308: учёт облачной квоты и безопасный отказ очистки](docs/audit-fixes-r308.ru.md)
+- [Аудит r310: достоверный список облачных копий](docs/audit-fixes-r310.ru.md)
 - [Аудит r309: скачивание без потери прежнего файла](docs/audit-fixes-r309.ru.md)
 - [Аудит r307: контекст папок Drive и смена настроек во время загрузки](docs/audit-fixes-r307.ru.md)
 - [Аудит r305: OAuth и кэш токена](docs/audit-fixes-r305.ru.md)

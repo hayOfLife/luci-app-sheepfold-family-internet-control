@@ -1,5 +1,16 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-11, **r310**, based on `0c27dff` (r309).
+B98–B99 repair the standalone Drive file listing, typed JSON serialization,
+complete bounded folder reads and operation context. See the
+[99-card register](bug-register.ru.md) and [r310 report](audit-fixes-r310.ru.md).
+The output contract is unchanged; failures do not become successful empty lists.
+Restore/latest, full pagination, native OpenWrt runtime and RAM quotas remain R14.
+No live Google request or configuration restore was performed. Android, access
+policy, workflow and runner code are unchanged.
+
+Historical continuation:
+
 Focused continuation: 2026-09-11, **r309**, based on `c535dfa` (r308).
 B95–B97 repair the standalone download entry point, distinguish lookup failure,
 and preserve an existing destination until HTTP, ID/size, path and context checks

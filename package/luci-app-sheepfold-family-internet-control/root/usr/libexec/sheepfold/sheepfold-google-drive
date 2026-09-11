@@ -707,54 +707,90 @@ find_file_in_folder() {
 	drive_find_id "$1" "$2" file
 }
 
-folder_list_json_array() {
-	folder_id="$1"
-	response
+# Вывод для LuCI сохраняет прежние name/bytes/modified. JSON строит штатный
+# jshn: разбор по строкам зависит от pretty-print и портит экранированные имена.
+drive_listing_item() (
+	row="$(drive_inventory_item "$1")" || exit 1
+	tab="$(printf '\t')"
+	item_id="${row%%$tab*}"
+	rest="${row#*$tab}"
+	item_bytes="${rest%%$tab*}"
+	json_get_var item_name name || exit 1
+	json_get_type value_type modifiedTime || exit 1
+	[ "$value_type" = string ] || exit 1
+	json_get_var modified modifiedTime || exit 1
+	[ -n "$modified" ] && [ "${#modified}" -le 64 ] || exit 1
+	json_init
+	json_add_string name "$item_name" || exit 1
+	json_add_int bytes "$item_bytes" || exit 1
+	json_add_string modified "$modified" || exit 1
+	# Одна JSON-строка на объект нужна только внутреннему framing. Переводы
+	# строк в самом имени остаются экранированными, не становятся разделителями.
+	JSON_INDENT=''
+	encoded="$(json_dump -n)" || exit 1
+	[ -n "$encoded" ] || exit 1
+	printf '%s\t%s\n' "$item_id" "$encoded"
+)
 
-	response="$(drive_request GET "$DRIVE_API/files?q=$(printf "'%s' in parents and trashed=false" "$folder_id" | sed 's/ /%20/g')&fields=files(name,size,modifiedTime)&pageSize=200&orderBy=modifiedTime desc" 2>/dev/null || true)"
-	printf '%s' "$response" | awk '
-		function json_escape(value) {
-			gsub(/\\/, "\\\\", value)
-			gsub(/"/, "\\\"", value)
-			return value
-		}
-		BEGIN { items = "" }
-		/"name":"/ {
-			line = $0
-			sub(/.*"name":"/, "", line)
-			sub(/".*/, "", line)
-			name = line
-			getline
-			line = $0
-			size = 0
-			if (line ~ /"size":/) {
-				sub(/.*"size":/, "", line)
-				sub(/,.*/, "", line)
-				size = line
-			}
-			modified = ""
-			if (line ~ /"modifiedTime":/) {
-				sub(/.*"modifiedTime":"/, "", line)
-				sub(/".*/, "", line)
-				modified = line
-			} else {
-				getline
-				line = $0
-				if (line ~ /"modifiedTime":/) {
-					sub(/.*"modifiedTime":"/, "", line)
-					sub(/".*/, "", line)
-					modified = line
-				}
-			}
-			if (name != "") {
-				if (items != "") items = items ","
-				items = items sprintf("{\"name\":\"%s\",\"bytes\":%s,\"modified\":\"%s\"}",
-					json_escape(name), (size == "" ? 0 : size), json_escape(modified))
-			}
-		}
-		END { printf "%s", items }
-	'
-}
+drive_listing_rows() (
+	set +u
+	set -f
+	[ -r /usr/share/libubox/jshn.sh ] || exit 1
+	. /usr/share/libubox/jshn.sh
+	json_init
+	drive_json_load "$1" || exit 1
+	parent_id="$2"
+	if json_get_type value_type error; then exit 1; fi
+	if json_get_type value_type incompleteSearch; then
+		[ "$value_type" = boolean ] || exit 1
+		json_get_var incomplete incompleteSearch || exit 1
+		[ "$incomplete" = 0 ] || exit 1
+	fi
+	if json_get_type value_type nextPageToken; then
+		[ "$value_type" = string ] || exit 1
+		json_get_var page_token nextPageToken || exit 1
+		[ -z "$page_token" ] || exit 1
+	fi
+	json_get_type value_type files || exit 1
+	[ "$value_type" = array ] || exit 1
+	json_select files || exit 1
+	json_get_keys indexes || exit 1
+	set -- $indexes
+	[ "$#" -le 200 ] || exit 1
+	for index in "$@"; do
+		json_get_type value_type "$index" || exit 1
+		[ "$value_type" = object ] || exit 1
+		( json_select "$index" && drive_listing_item "$parent_id" ) || exit 1
+	done
+)
+
+folder_list_json_array() (
+	folder_id="$1"
+	drive_id_valid "$folder_id" || exit 1
+	work="$(drive_workdir)" || exit 1
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	umask 077
+	token="$(access_token)" || exit 1
+	drive_context_check || exit 1
+	code="$(curl -sS -m 60 --get -o "$work/listing-response" -w '%{http_code}' \
+		-H "Authorization: Bearer $token" \
+		--data-urlencode "q='$folder_id' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'" \
+		--data-urlencode 'fields=files(id,name,size,modifiedTime,mimeType,parents,trashed),nextPageToken,incompleteSearch' \
+		--data-urlencode 'pageSize=200' --data-urlencode 'orderBy=modifiedTime desc,name' \
+		"$DRIVE_API/files")" || exit 1
+	drive_context_check || exit 1
+	[ "$code" = 200 ] || exit 1
+	bytes="$(drive_local_bytes "$work/listing-response")" || exit 1
+	[ "${#bytes}" -le 6 ] && [ "$bytes" -le 262144 ] || exit 1
+	response="$(cat "$work/listing-response")" || exit 1
+	# До публикации проверяется вся папка. Ошибка последней записи не должна
+	# оставлять вызывающему коду успешный или частичный список первых записей.
+	drive_listing_rows "$response" "$folder_id" >"$work/listing-rows" || exit 1
+	awk -F '\t' 'seen[$1]++ { exit 1 }' "$work/listing-rows" || exit 1
+	drive_context_check || exit 1
+	awk 'BEGIN { sep="" } { sub(/^[^\t]*\t/, ""); printf "%s%s", sep, $0; sep="," }' "$work/listing-rows"
+)
 
 # Квота основана на полном списке двух папок, не на regex отдельных size.
 # Числа ограничены до арифметики: total*100 также помещается в int64.
@@ -1018,19 +1054,27 @@ cmd_test() {
 	return 1
 }
 
-cmd_list() {
-	root logs_json backups_json root_name
-
-	require_tooling || return 1
-	cache_folder_ids || return 1
-	root_name="$(normalize_root_folder)"
-	logs_json="$(folder_list_json_array "$(folder_id_from_cache logs)")"
-	backups_json="$(folder_list_json_array "$(folder_id_from_cache backups)")"
-	[ -n "$logs_json" ] || logs_json=""
-	[ -n "$backups_json" ] || backups_json=""
-	printf '{"ok":true,"root":"%s","logs":[%s],"backups":[%s]}\n' \
-		"$(json_escape "/$root_name")" "$logs_json" "$backups_json"
+drive_list_error() {
+	printf '{"ok":false,"error":"list_unavailable"}\n'
+	return 1
 }
+
+cmd_list() (
+	require_tooling || exit 1
+	# Один контекст на обе папки. При отказе второй не отдаём первую как
+	# полный результат и не повторяем чтение с незаметно сменившимся аккаунтом.
+	drive_context_begin || { drive_list_error; exit 1; }
+	cache_folder_ids || { drive_list_error; exit 1; }
+	logs_id="$(folder_id_from_cache logs)" || { drive_list_error; exit 1; }
+	backups_id="$(folder_id_from_cache backups)" || { drive_list_error; exit 1; }
+	[ "$logs_id" != "$backups_id" ] || { drive_list_error; exit 1; }
+	logs_json="$(folder_list_json_array "$logs_id")" || { drive_list_error; exit 1; }
+	backups_json="$(folder_list_json_array "$backups_id")" || { drive_list_error; exit 1; }
+	root_json="$(json_escape "/$DRIVE_CONTEXT_ROOT")" || { drive_list_error; exit 1; }
+	drive_context_check || { drive_list_error; exit 1; }
+	printf '{"ok":true,"root":"%s","logs":[%s],"backups":[%s]}\n' \
+		"$root_json" "$logs_json" "$backups_json"
+)
 
 # Назначение download остаётся внутри /tmp. Проверяется каждый компонент:
 # совпадение префикса не закрывает '..', ссылку или каталог вместо файла.

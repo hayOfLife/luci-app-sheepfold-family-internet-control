@@ -195,6 +195,11 @@ try:
   obj=json.loads(sys.argv[3]); assert isinstance(obj,dict); print('jsonData='+shlex.quote(sys.argv[3])); sys.exit(0)
  obj=json.loads(sys.stdin.read()); assert isinstance(obj,(dict,list))
  if len(sys.argv)==1: sys.exit(0)
+ if sys.argv[1]=='add':
+  obj[sys.argv[3]]=int(sys.argv[4]) if sys.argv[2]=='int' else sys.argv[4]
+  print(shlex.quote(json.dumps(obj,separators=(',',':'),ensure_ascii=False))); sys.exit(0)
+ if sys.argv[1]=='dump':
+  print(json.dumps(obj,separators=(',',':'),ensure_ascii=False)); sys.exit(0)
  if sys.argv[1]=='keys':
   print(shlex.quote(' '.join(str(i+1) for i in range(len(obj))) if isinstance(obj,list) else ' '.join(obj.keys()))); sys.exit(0)
  v=obj[int(sys.argv[2])-1] if isinstance(obj,list) else obj[sys.argv[2]]
@@ -210,6 +215,10 @@ except (ValueError,KeyError,IndexError,AssertionError,TypeError): sys.exit(1)
   put('jshn.sh',readFileSync(join(bin,'jshn.sh'),'utf8') +
     `json_select() { local jsonValue; jsonValue="$(printf '%s' "$jsonData" | python3 -S ${q(path(join(bin, 'jsonModel.py')))} select "$1")" || return 1; eval "jsonData=$jsonValue"; }\n` +
     `json_get_keys() { local jsonValue; jsonValue="$(printf '%s' "$jsonData" | python3 -S ${q(path(join(bin, 'jsonModel.py')))} keys)" || return 1; eval "$1=$jsonValue"; }\n`);
+  put('jshn.sh',readFileSync(join(bin,'jshn.sh'),'utf8') +
+    `json_add_string() { local encoded; encoded="$(printf '%s' "$jsonData" | python3 -S ${q(path(join(bin,'jsonModel.py')))} add string "$1" "$2")" || return 1; eval "jsonData=$encoded"; }\n` +
+    `json_add_int() { local encoded; encoded="$(printf '%s' "$jsonData" | python3 -S ${q(path(join(bin,'jsonModel.py')))} add int "$1" "$2")" || return 1; eval "jsonData=$encoded"; }\n` +
+    `json_dump() { printf '%s' "$jsonData" | python3 -S ${q(path(join(bin,'jsonModel.py')))} dump; }\n`);
   const run = (command = 'archive-push', args = []) => spawnSync(process.platform === 'win32' ? 'bash' : 'sh',
     ['-c', 'PATH="$1:$PATH"; export PATH; shift; exec sh "$@"', 'gdrive-fixture', path(bin), path(join(bin, 'sheepfold-google-drive')), command, ...args],
     { cwd: repo, env: { ...process.env, GDRIVE_OPTIONS: path(settings), GDRIVE_TRACE: path(traceFile) }, encoding: 'utf8', timeout: 20000 });
@@ -1020,5 +1029,120 @@ describe('Google Drive download safety', () => {
   it('rejects a control character in the remote name before HTTP', (t)=>{
     const f=fixture(t),file=target(f),reply=assertPreserved(f,file,f.run('download',['bad\nname.tar',f.path(file)]));
     assert.equal(reply.error,'path_not_allowed');assert.equal(f.trace().length,0);
+  });
+});
+
+/* r310: list выполняется целиком. Реальные файлы/аккаунты не затрагиваются;
+ * список — HTTP-модель, а serializer моделирует штатные вызовы jshn. */
+describe('Google Drive list safety', () => {
+  const record = (id, parent, overrides={}) => ({id, name:`${id}.tar.gz`, size:'12',
+    modifiedTime:'2026-09-11T08:00:00.000Z', mimeType:'application/gzip',
+    parents:[parent], trashed:false, ...overrides});
+  const records = () => ({folder1:[record('log2','folder1'),record('log1','folder1',{size:'00007'})],
+    backup1:[record('saved','backup1',{name:'sheepfold-config-20260911.tar.gz',size:'4000000000'})]});
+  const listed = (f) => f.trace().filter((event)=>['inventory','pruneList'].includes(event.kind));
+  const unavailable = (f, result) => {
+    failed(result);
+    assert.deepEqual(JSON.parse(result.stdout),{ok:false,error:'list_unavailable'});
+    assert.ok(!f.trace().some((event)=>['upload','delete','download'].includes(event.kind)));
+    assert.deepEqual(f.leftovers(),[]);
+  };
+  for (const style of ['compact','pretty','reordered']) it(`lists every file using ${style} JSON and numeric bytes`, (t)=>{
+    const files=records(), bodies={};
+    for (const [parent,items] of Object.entries(files)) {
+      const values=style==='reordered'?items.map((item)=>Object.fromEntries(Object.entries(item).reverse())):items;
+      bodies[parent]=JSON.stringify({files:values},null,style==='pretty'?2:0);
+    }
+    const f=fixture(t,{inventoryBodies:bodies}); const result=f.run('list'); succeeded(result);
+    const data=JSON.parse(result.stdout);
+    assert.equal(data.ok,true);assert.equal(data.root,'/sheepfold');
+    assert.deepEqual(data.logs,files.folder1.map((v)=>({name:v.name,bytes:Number(v.size),modified:v.modifiedTime})));
+    assert.deepEqual(data.backups,files.backup1.map((v)=>({name:v.name,bytes:Number(v.size),modified:v.modifiedTime})));
+    assert.equal(listed(f).length,2);assert.deepEqual(f.leftovers(),[]);
+  });
+  it('returns successful empty arrays only after reading both folders', (t)=>{
+    const f=fixture(t);const result=f.run('list');succeeded(result);
+    assert.deepEqual(JSON.parse(result.stdout),{ok:true,root:'/sheepfold',logs:[],backups:[]});assert.equal(listed(f).length,2);
+  });
+  for (const options of [{inventoryHttp:403},{inventoryHttp:500},{inventoryExit:7}]) it(`rejects an unsuccessful listing ${JSON.stringify(options)}`, (t)=>{
+    const f=fixture(t,{inventoryFiles:records(),...options});unavailable(f,f.run('list'));assert.ok(listed(f).length>0,'listing was not reached');
+  });
+  for (const [label,body] of [
+    ['broken JSON','{"files":['],['absent array','{}'],['object instead of array','{"files":{}}'],
+    ['server error','{"files":[],"error":{"code":500}}'],
+    ['next page','{"files":[],"nextPageToken":"more"}'],
+    ['wrong page type','{"files":[],"nextPageToken":false}'],
+    ['incomplete search','{"files":[],"incompleteSearch":true}'],
+    ['wrong incomplete type','{"files":[],"incompleteSearch":"false"}']
+  ]) it(`does not show a successful empty list for ${label}`, (t)=>{
+    const f=fixture(t,{inventoryBodies:{folder1:body}});unavailable(f,f.run('list'));assert.ok(listed(f).length>0);
+  });
+  for (const [label,change] of [
+    ['missing size',{size:undefined}],['negative size',{size:'-1'}],['wrong size type',{size:true}],
+    ['oversized number',{size:'1000000000000000'}],['invalid id',{id:'bad/id'}],
+    ['non-string name',{name:['name.tar']}],['foreign parent',{parents:['other']}],
+    ['folder object',{mimeType:'application/vnd.google-apps.folder'}],['trashed object',{trashed:true}],
+    ['missing time',{modifiedTime:undefined}],['non-string time',{modifiedTime:42}]
+  ]) it(`discards all results when the second folder has ${label}`, (t)=>{
+    const files=records();files.backup1=[record('bad','backup1',change)];
+    const f=fixture(t,{inventoryFiles:files});unavailable(f,f.run('list'));
+    assert.equal(listed(f).length,2,'must reach the invalid second folder, not fail earlier');
+  });
+  it('rejects repeated IDs without publishing an earlier valid item', (t)=>{
+    const item=record('duplicate','folder1');const f=fixture(t,{inventoryFiles:{folder1:[item,item]}});
+    unavailable(f,f.run('list'));assert.ok(listed(f).length>0);
+  });
+  it('preserves escaped names, UTF-8, whitespace and a zero-byte file', (t)=>{
+    const name=' Имя "копии" \\ & + % #\t\b\f\r\n🌟\n';
+    const f=fixture(t,{inventoryFiles:{folder1:[record('zero','folder1',{name,size:'0'})]}});
+    const result=f.run('list');succeeded(result);assert.equal(JSON.parse(result.stdout).logs[0].name,name);
+    assert.equal(JSON.parse(result.stdout).logs[0].bytes,0);
+  });
+  it('requests a bounded complete list sorted by modification time with URL encoding', (t)=>{
+    const f=fixture(t);succeeded(f.run('list'));
+    for(const event of listed(f)){
+      assert.equal(event.query.pageSize[0],'200');assert.equal(event.query.orderBy[0],'modifiedTime desc,name');
+      assert.match(event.query.fields[0],/nextPageToken/);assert.match(event.query.fields[0],/incompleteSearch/);
+      assert.match(event.query.fields[0],/modifiedTime/);assert.match(event.query.q[0],/mimeType!='application\/vnd.google-apps.folder'/);
+      assert.ok(!event.url.includes(' '),'literal spaces in URL');
+    }
+  });
+  it('rejects more than 200 objects before serializing the folder', (t)=>{
+    const f=fixture(t,{inventoryFiles:{folder1:Array.from({length:201},(_,i)=>record(`file${i}`,'folder1'))}});
+    unavailable(f,f.run('list'));
+  });
+  it('rejects a response larger than 256 KiB', (t)=>{
+    const f=fixture(t,{inventoryBodies:{folder1:JSON.stringify({files:[],padding:'x'.repeat(262144)})}});
+    unavailable(f,f.run('list'));
+  });
+  for(const tool of ['cat','wc']) it(`discards partial listing data after ${tool} reports failure`, (t)=>{
+    const f=fixture(t,{inventoryFiles:records()});
+    const marker=q(f.path(join(f.root,'listing-ready')));
+    if(tool==='wc') {
+      // wc читает stdin: имя файла отсутствует в argv. Барьер curl доказывает,
+      // что отказ относится к измерению списка, а не к более раннему OAuth.
+      f.fault('curl','case "$*" in */listing-response*) true;; *) false;; esac',
+        `"${f.path(join(f.bin,'curl-original'))}" "$@"; status=$?; touch ${marker}; exit "$status"`);
+    }
+    const predicate=tool==='cat'?'case "$*" in */listing-response*) true;; *) false;; esac':
+      `[ "\${1:-}" = -c ] && [ -f ${marker} ]`;
+    f.fault(tool,predicate,tool==='cat'?"printf '{\"files\":[]}'; exit 7":"printf 2; exit 7");
+    const result=f.run('list');
+    assert.ok(f.trace().some((event)=>event.kind===`${tool}-fault`),'fault was not invoked');
+    unavailable(f,result);
+  });
+  it('reports list preparation failure and preserves unrelated local files', (t)=>{
+    const f=fixture(t);f.fault('mktemp',':','exit 7');unavailable(f,f.run('list'));
+    assert.ok(f.trace().some((event)=>event.kind==='mktemp-fault'));assert.equal(readFileSync(f.archive,'utf8'),payload);
+  });
+  it('does not mix the first folder with new credentials mid-list', (t)=>{
+    const f=fixture(t,{inventoryFiles:records(),changeContextAt:'inventory',contextChange:{refresh_token:'new-context'}});
+    unavailable(f,f.run('list'));assert.ok(f.trace().some((event)=>event.contextChanged));
+    assert.equal(listed(f).length,1);assert.equal(f.trace().filter((event)=>event.kind==='token').length,0);
+  });
+  it('does not publish a partial JSON fragment when the folder helper fails', (t)=>{
+    const files=records();files.folder1.push(record('bad','folder1',{modifiedTime:null}));
+    const f=fixture(t,{inventoryFiles:files});const result=f.call('folder_list_json_array',['folder1']);
+    failed(result);assert.equal(result.stdout,'');assert.ok(listed(f).length>0);
   });
 });

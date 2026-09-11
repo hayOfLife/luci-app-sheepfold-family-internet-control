@@ -120,6 +120,7 @@ See:
 - [Detailed defect register and decision rationale](docs/bug-register.ru.md)
 - [r306 exact Drive lookup and folder-cache audit](docs/audit-fixes-r306.ru.md)
 - [r308 Drive quota accounting and cleanup audit](docs/audit-fixes-r308.ru.md)
+- [r310 verified Google Drive file listing audit](docs/audit-fixes-r310.ru.md)
 - [r309 verified download and destination preservation audit](docs/audit-fixes-r309.ru.md)
 - [r307 Drive folder identity and upload-context audit](docs/audit-fixes-r307.ru.md)
 - [r305 OAuth and token-cache audit report](docs/audit-fixes-r305.ru.md)

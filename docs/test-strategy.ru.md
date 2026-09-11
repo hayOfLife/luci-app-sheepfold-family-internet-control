@@ -803,3 +803,26 @@ cmd_download: он нужен, чтобы ранний B95 не скрывал �
 контура из-за блокирующей записи моделью; права сравниваются по access-битам, без
 ошибочного приравнивания inherited setgid к доступу группы. Нативный Google/UCI/jshn,
 целевой curl и восстановление конфигурации этим стендом не проверяются.
+
+
+## Google Drive: просмотр копий r310
+
+<!-- §gdlst01 -->
+
+Прямой набор: `Google Drive list safety` в `tests/googleDriveUploadRuntime.test.mjs`.
+Проверяет исполнение настоящего list и двух folders с моделью curl/UCI/jshn,
+полноту JSON, ошибки, URL-параметры, контекст и отсутствие частичного stdout.
+Новый serializer использует обычные json_add_string/json_add_int/json_dump;
+Python-модель этих вызовов не выдаётся за запуск нативной libubox.
+
+```sh
+node --test --test-name-pattern='Google Drive list safety' tests/googleDriveUploadRuntime.test.mjs
+node --test --test-name-pattern='Google Drive lookup and folder publication|Google Drive lookup supplemental boundaries' tests/googleDriveUploadRuntime.test.mjs
+```
+
+Ближайшие спутники: logStorage, logWriterRuntime, packageHardeningRuntime,
+testIpkPermissions. Они запускаются последовательным runner по файлам. Общие
+workflow/runner не менялись; полный suite и несвязанные Android-сборки не нужны
+для этого узкого изменения. Сравнение на оригинале/decl-only и результаты —
+[отчёт r310](audit-fixes-r310.ru.md). Для wc-fault после HTTP используется барьер:
+имени входного файла нет в argv, потому что wc читает перенаправленный stdin.

@@ -428,6 +428,8 @@ revision; неизвестный global state отключает обе кома
 | `§ovaudit4` | OVERVIEW_R252_REGRESSION_PASS | LuCI/тестирование | Проход r252 проверяет refresh-семантику, накопительное усиление и runtime edge-cases после декомпозиции overview. Файлы: `chatgpt-final-overview-refactoring.ru.md`, `overviewFinalExperimentalR252.test.mjs`, `overviewFinalRefreshSemantics.test.mjs`, `finalAuditHardening.test.mjs` |
 | `§ovaudit5` | OVERVIEW_R252_FINAL_AUDIT | LuCI/безопасность/тестирование | Финальный r252-аудит удерживает fail-closed UCI-транзакции, межадминистраторские и групповые инварианты и экспериментальные regression-кейсы. Файлы: `chatgpt-final-overview-refactoring.ru.md`, `tools/quality/luciFinalAudit.mjs`, `overviewFinalExperimentalR252.test.mjs`, `overviewFinalRuntime.test.mjs` |
 
+| `§gdlst01` | VERIFIED_DRIVE_FILE_LIST | облачное хранение/тестирование | Пользовательский list проверяет обе папки и контекст до успешного ответа. jshn сохраняет name/bytes/modified; HTTP/JSON/страница с продолжением не заменяются пустым списком. Предел 200 объектов/256 КиБ, не полная пагинация или потоковая RAM-квота. Файлы: `google-drive-storage.ru.md`, `audit-fixes-r310.ru.md`, `bug-register.ru.md`, `test-strategy.ru.md`, `googleDriveUploadRuntime.test.mjs`. Восстановление конфигурации не активируется этой правкой. |
+
 ---
 
 *Файл поддерживается разработчиками и ИИ-агентами вручную. При добавлении нового тега — обязательно добавить строку в нужный раздел. При удалении или изменении смысла — обновить/удалить строку и найти все вхождения через `grep -r '§XXXXXXX' .`*
