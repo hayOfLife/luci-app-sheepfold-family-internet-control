@@ -432,3 +432,13 @@ size в Drive — строка; regex числа без кавычек дава�
 не включает старый latest/restore с непроверенной распаковкой. Для wc-fault нужен
 маркер достигнутого чтения: файл подаётся через stdin и отсутствует в argv.
 См. (§gdlst01), [B98–B99](bug-register.ru.md), [отчёт r310](audit-fixes-r310.ru.md).
+
+
+## Google Drive: status не является сохранением (r311)
+
+Не возвращать set/commit `gdrive.authorized` в `cmd_status`: общий commit сохранял
+чужую pending-очередь. Не вызывать из status ensure/cache-подготовку папок — она
+создаёт объекты. `drive_status_bytes` использует только проверяемый поиск и чтение.
+Явная отправка проверяет текущие реквизиты, не постоянный authorized; OAuth-кэш
+в RAM по-прежнему обновляется. [B100–B101](bug-register.ru.md),
+[команды и ограничения](audit-fixes-r311.ru.md).

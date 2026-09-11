@@ -9,6 +9,8 @@
  * точках запроса и фиксирует, были ли дальнейшие запись/удаление исходника.
  * r308: полный проверенный учёт квоты, отказ очистки до подтверждения списка,
  * остановка после ошибки DELETE. Все удаляемые объекты существуют только в HTTP-модели.
+ * r311: status не сохраняет UCI-черновик и не создаёт облачные папки;
+ * явная архивная отправка проверяет текущие реквизиты, не старый флаг.
  * Подмена источника повторяет те же assertions на предыдущей версии.
  */
 import assert from 'node:assert/strict';
@@ -139,6 +141,10 @@ elif search.startswith("name="):
  folder_id='backup1' if search.startswith("name='backups'") else 'folder1' if search.startswith("name='logs'") else 'root1'
  default='{"files":[]}' if opts.get('emptyFolders' if folder else 'newFile') else (json.dumps({'files':[{'id':folder_id,'name':'folder'}]}) if folder else '{"files":[{"id":"file1","name":"synthetic.tar","size":"25"}]}')
  body=opts.get(kind+'Body',default).replace('@folderId@',folder_id); http=str(opts.get(kind+'Http',200)); exitcode=opts.get(kind+'Exit',0)
+ if folder:
+  folder_name='backups' if folder_id=='backup1' else 'logs' if folder_id=='folder1' else 'root'
+  if folder_name in opts.get('missingFolders',[]): body='{"files":[]}'
+  if folder_name in opts.get('folderBodies',{}): body=opts['folderBodies'][folder_name]
 elif method=='POST' and '/drive/v3/files' in url:
  kind='folderCreate'
  data=arg('--data-binary',arg('-d')); metadata=json.loads(pathlib.Path(data[1:]).read_text()) if data.startswith('@') else json.loads(data)
@@ -1144,5 +1150,124 @@ describe('Google Drive list safety', () => {
     const files=records();files.folder1.push(record('bad','folder1',{modifiedTime:null}));
     const f=fixture(t,{inventoryFiles:files});const result=f.call('folder_list_json_array',['folder1']);
     failed(result);assert.equal(result.stdout,'');assert.ok(listed(f).length>0);
+  });
+});
+
+/* r311: наблюдаем реальные set/commit и их эффект на две модели состояния.
+ * Сеть и UCI изолированы: вызов общего commit действительно переносит весь
+ * синтетический pending в committed. Успех не заменяет нативный libuci/LuCI.
+ */
+describe('Google Drive status observation safety', () => {
+  const writes = (f) => f.trace().filter((v) => ['folderCreate','upload','delete','uci-write'].includes(v.kind));
+  function configStore(f, deny = false) {
+    const file = join(f.root,'uci-state.json');
+    const initial = {committed:{'sheepfold.global.block_all':'0'},pending:{'sheepfold.global.block_all':'1'}};
+    writeFileSync(file,JSON.stringify(initial));
+    f.put('uciWriteModel.py', `import sys,json,os,pathlib
+args=[a for a in sys.argv[1:] if a!='-q']; path=pathlib.Path(${JSON.stringify(file)}); state=json.loads(path.read_text())
+with open(os.environ['GDRIVE_TRACE'],'a') as log: log.write(json.dumps({'kind':'uci-write','args':args})+'\\n')
+if ${deny ? 'True' : 'False'}: sys.exit(7)
+if args[0]=='set':
+ key,value=args[1].split('=',1); state['pending'][key]=value
+elif args[0]=='commit':
+ state['committed'].update(state['pending']); state['pending']={}
+else: sys.exit(8)
+path.write_text(json.dumps(state))
+`);
+    f.fault('uci','[ "${2:-}" = set ] || [ "${2:-}" = commit ]',
+      `exec python3 -S ${q(f.path(join(f.bin,'uciWriteModel.py')))} "$@"`);
+    return { initial, read:()=>JSON.parse(readFileSync(file,'utf8')) };
+  }
+  const goodStatus=(r)=>{succeeded(r);const data=JSON.parse(r.stdout);assert.equal(data.authorized,1);assert.equal(data.state,'ok');return data;};
+  it('does not commit an unrelated pending router policy when reading status', (t)=>{
+    const f=fixture(t);const store=configStore(f);
+    goodStatus(f.run('status')); assert.deepEqual(store.read(),store.initial);
+    assert.deepEqual(writes(f),[]);
+  });
+  it('repeated status reads do not add writes or empty another editor draft', (t)=>{
+    const f=fixture(t);const store=configStore(f);
+    goodStatus(f.run('status'));goodStatus(f.run('status'));
+    assert.deepEqual(store.read(),store.initial);assert.deepEqual(writes(f),[]);
+  });
+  it('does not even attempt UCI writes when its configuration store is read-only', (t)=>{
+    const f=fixture(t);const store=configStore(f,true);
+    goodStatus(f.run('status'));assert.deepEqual(store.read(),store.initial);assert.deepEqual(writes(f),[]);
+  });
+  it('the unified storage dispatcher preserves the no-write status boundary', (t)=>{
+    const f=fixture(t);const store=configStore(f);
+    f.put('storage',readFileSync(join(runtime,'sheepfold-log-storage'),'utf8')
+      .replaceAll('/usr/libexec/sheepfold/sheepfold-google-drive',f.path(join(f.bin,'sheepfold-google-drive'))));
+    const r=spawnSync('sh',[f.path(join(f.bin,'storage')),'status'],{cwd:repo,encoding:'utf8',timeout:20000,
+      env:{...process.env,PATH:`${f.bin}:${process.env.PATH}`,GDRIVE_OPTIONS:f.path(join(f.root,'response-options.json')),GDRIVE_TRACE:f.path(join(f.root,'trace.jsonl'))}});
+    goodStatus(r);assert.deepEqual(store.read(),store.initial);assert.deepEqual(writes(f),[]);
+  });
+  it('reports authenticated empty storage without creating any cloud folders', (t)=>{
+    const f=fixture(t,{emptyFolders:true});const data=goodStatus(f.run('status'));
+    assert.equal(data.used_mb,0);assert.equal(data.free_pct,100);assert.deepEqual(writes(f),[]);
+    assert.equal(f.trace().filter((v)=>v.kind==='folderLookup').length,1);
+    assert.equal(existsSync(join(f.ram,'.gdrive-folders.json')),false);
+  });
+  for(const missing of ['logs','backups']) it(`counts the existing folder when ${missing} is absent without creating it`,(t)=>{
+    const f=fixture(t,{missingFolders:[missing],inventoryFiles:{folder1:[quotaFile('log',String(2*1024*1024))],backup1:[quotaFile('copy',String(3*1024*1024),'backup1')]}});
+    const data=goodStatus(f.run('status'));assert.equal(data.used_mb,missing==='logs'?3:2);assert.deepEqual(writes(f),[]);
+    assert.equal(f.trace().filter((v)=>v.kind==='inventory').length,1);
+  });
+  it('ignores but does not overwrite a stale folder cache during status', (t)=>{
+    const f=fixture(t);const cache=join(f.ram,'.gdrive-folders.json');const old='synthetic malformed previous cache';writeFileSync(cache,old);
+    goodStatus(f.run('status'));assert.equal(readFileSync(cache,'utf8'),old);assert.deepEqual(writes(f),[]);
+  });
+  it('does not follow a folder-cache symlink on the observation path',{skip:!native},(t)=>{
+    const f=fixture(t);const kept=join(f.root,'keep');writeFileSync(kept,'keep');symlinkSync(kept,join(f.ram,'.gdrive-folders.json'));
+    goodStatus(f.run('status'));assert.equal(readFileSync(kept,'utf8'),'keep');assert.deepEqual(writes(f),[]);
+  });
+  for(const options of [{folderLookupHttp:403},{folderLookupExit:7},{folderLookupBody:'{"files":[]'},{folderLookupBody:'{"files":[],"nextPageToken":"next"}'}])
+    it(`does not confuse unknown folders with zero usage ${JSON.stringify(options)}`,(t)=>{
+      const f=fixture(t,options);const r=f.run('status');succeeded(r);const data=JSON.parse(r.stdout);
+      assert.equal(data.state,'error');assert.equal(data.free_pct,0);assert.deepEqual(writes(f),[]);
+      assert.ok(f.trace().some((v)=>v.kind==='folderLookup'),'lookup not reached');
+    });
+  it('refuses repeated folder IDs rather than count or create into the wrong folder',(t)=>{
+    const f=fixture(t,{folderBodies:{backups:'{"files":[{"id":"folder1"}]}'}});const r=f.run('status');succeeded(r);
+    assert.equal(JSON.parse(r.stdout).state,'error');assert.deepEqual(writes(f),[]);
+  });
+  it('does not publish partial usage after the backups inventory fails',(t)=>{
+    const f=fixture(t,{inventoryFiles:{folder1:[quotaFile('log','1048576')]},inventoryBodies:{backup1:'{"files":[]'}});
+    const r=f.run('status');succeeded(r);assert.equal(JSON.parse(r.stdout).free_pct,0);assert.deepEqual(writes(f),[]);
+    assert.equal(f.trace().filter((v)=>v.kind==='inventory').length,2);
+  });
+  it('rejects a settings change during lookup without creating or committing',(t)=>{
+    const f=fixture(t,{changeContextAt:'folderLookup',contextChange:{root_folder:'/new-place'}});const r=f.run('status');succeeded(r);
+    assert.equal(JSON.parse(r.stdout).state,'error');assert.ok(f.trace().some((v)=>v.contextChanged));assert.deepEqual(writes(f),[]);
+  });
+  it('preserves normal quoted-byte quota status from both folders',(t)=>{
+    const f=fixture(t,{inventoryFiles:{folder1:[quotaFile('log','1048576')],backup1:[quotaFile('copy','2097152','backup1')]}});
+    assert.equal(goodStatus(f.run('status')).used_mb,3);assert.deepEqual(writes(f),[]);
+  });
+  it('refreshes an OAuth cache when needed without changing UCI or Drive objects',(t)=>{
+    const f=fixture(t,{noTokenCache:true});const store=configStore(f);goodStatus(f.run('status'));
+    assert.ok(f.trace().some((v)=>v.kind==='token'));assert.ok(existsSync(f.cacheFile));
+    assert.deepEqual(store.read(),store.initial);assert.deepEqual(writes(f),[]);
+  });
+  for(const authorized of ['0',null]) it(`archive upload uses verified credentials rather than persistent authorized=${authorized}`,(t)=>{
+    const f=fixture(t,{credentials:{authorized}});const store=configStore(f,true);
+    const r=f.run('archive-push');succeeded(r);assert.equal(JSON.parse(r.stdout).ok,true);
+    assert.ok(f.trace().some((v)=>v.kind==='upload'));assert.equal(existsSync(f.archive),false);
+    assert.deepEqual(store.read(),store.initial);assert.equal(f.trace().filter((v)=>v.kind==='uci-write').length,0);
+  });
+  for(const authorized of ['0','1']) it(`archive failure is not successful no-op when authorized=${authorized} and refresh fails`,(t)=>{
+    const f=fixture(t,{credentials:{authorized},noTokenCache:true,tokenHttp:400});const store=configStore(f,true);
+    failed(f.run());assert.ok(f.trace().some((v)=>v.kind==='token'));assert.ok(existsSync(f.archive));
+    assert.ok(!f.trace().some((v)=>v.kind==='upload'));assert.deepEqual(store.read(),store.initial);
+  });
+  it('does not upload when another storage backend is selected',(t)=>{
+    const f=fixture(t,{credentials:{authorized:'0'}});
+    f.fault('uci','[ "${2:-}" = get ] && [ "${3:-}" = sheepfold.global.log_storage ]',"printf ram; exit 0");
+    succeeded(f.run());assert.ok(existsSync(f.archive));assert.ok(f.trace().some((v)=>v.kind==='uci-fault'));
+    assert.ok(!f.trace().some((v)=>['token','upload','folderLookup'].includes(v.kind)));
+  });
+  it('explicit archive upload can still create missing folders',(t)=>{
+    const f=fixture(t,{credentials:{authorized:'0'},emptyFolders:true});configStore(f,true);
+    const r=f.run();succeeded(r);assert.ok(f.trace().some((v)=>v.kind==='folderCreate'));assert.ok(f.trace().some((v)=>v.kind==='upload'));
+    assert.equal(f.trace().filter((v)=>v.kind==='uci-write').length,0);
   });
 });

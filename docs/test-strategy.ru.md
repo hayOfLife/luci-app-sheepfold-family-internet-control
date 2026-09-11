@@ -826,3 +826,12 @@ workflow/runner не менялись; полный suite и несвязанн�
 для этого узкого изменения. Сравнение на оригинале/decl-only и результаты —
 [отчёт r310](audit-fixes-r310.ru.md). Для wc-fault после HTTP используется барьер:
 имени входного файла нет в argv, потому что wc читает перенаправленный stdin.
+
+
+## Статус облака без побочного сохранения (r311)
+
+`Google Drive status observation safety` в `tests/googleDriveUploadRuntime.test.mjs`
+выполняет настоящий status, общий storage dispatcher и archive-push с HTTP/UCI/jshn
+моделями. Pending и committed проверяются отдельно, а создание облачных папок — по
+HTTP-трассе. Это не native UCI или реальные облачные объекты. Команды, выбор соседних
+тестов и ограничения: [отчёт r311](audit-fixes-r311.ru.md).
