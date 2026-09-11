@@ -855,3 +855,29 @@ node --test --test-name-pattern='Google Drive local archive snapshots|Google Dri
 команда может удалять уже отправленные архивы. Полный состав соседних проверок,
 исходные отказы, ограничения среды и результаты — [отчёт r312](audit-fixes-r312.ru.md).
 Успех не подтверждает native UCI, flash, реальный Google или восстановление устройства.
+
+
+## Настроенный журнал и shared lock при Google Drive export (r313)
+
+Из корня checkout, POSIX sh, Node.js и Python 3. Linux-only сценарии дополнительно
+используют настоящий `flock`; подставленные utility-отказы оставляют проверяемый trace.
+Тесты работают только с синтетическими файлами в `.build`, удаляют их после завершения
+и не обращаются к облачным аккаунтам. HTTP/UCI/jshn — модели; передача байтов и
+межпроцессные блокировки проверяются раздельно.
+
+```sh
+node --test --test-name-pattern='Google Drive configured journal snapshots|Google Drive journal snapshot failure boundaries|Google Drive journal shared-lock coordination' tests/googleDriveUploadRuntime.test.mjs
+```
+
+Ожидается exit 0, 38 успешных сценариев на Linux. На других платформах явно видимы
+пропуски требующих POSIX-возможностей сценариев: они не считаются успешным Linux-тестом.
+Ближайшие прежние группы: local archive snapshots, archive format controls,
+independent upload evidence, upload preparation, checks preparation before remote
+mutation и status observation safety. Непосредственные соседи: `logStorage`,
+`logWriterRuntime`, `packageHardeningRuntime`, `testIpkPermissions` на обеих редакциях.
+Не запускать production-скрипт от root на рабочем роутере вместо fixture.
+
+Проверяются выбранный путь/отсутствие, контроли недопустимых путей, UCI/FS-отказы,
+настоящая блокировка во время cp и её отсутствие во время HTTP, сохранность новых
+событий, отсутствие сети при неподготовленном снимке и очистка собственного workspace.
+Протоколы и ограничения: [отчёт r313](audit-fixes-r313.ru.md).

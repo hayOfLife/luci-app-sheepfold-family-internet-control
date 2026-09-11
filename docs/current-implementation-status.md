@@ -1,5 +1,17 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-11, **r313**, based on `bf8e075` (r312).
+B104–B105 align Google Drive journal exports with `log_cache_path` and capture a
+checked local snapshot under the existing writer/API/rotation lock. The lock is
+released before network operations; later live events do not invalidate that
+snapshot. See the [105-card register](bug-register.ru.md) and
+[r313 report](audit-fixes-r313.ru.md). This does not validate other exporters,
+cloud concurrency, native OpenWrt, physical equipment or configuration restore.
+No Android, access-policy, workflow or test-runner code changed.
+
+Historical continuations (their tests are not results for the current code):
+
+
 Focused continuation: 2026-09-11, **r310**, based on `0c27dff` (r309).
 B98–B99 repair the standalone Drive file listing, typed JSON serialization,
 complete bounded folder reads and operation context. See the

@@ -1451,18 +1451,68 @@ prune_remote_logs() (
 	exit 1
 )
 
+# Копируем именно настроенный административный журнал. Снимок согласуется с
+# writer/API/rotator, но их общий lock не удерживается во время сетевых запросов.
+# Код 4 означает только подтверждённое отсутствие файла, не ошибку чтения.
+drive_events_snapshot() (
+	local destination log_common lock_common log_file current_path
+	destination="$1"
+	umask 077
+	log_common="${0%/*}/sheepfold-log-common"
+	[ -r "$log_common" ] || log_common=/usr/libexec/sheepfold/sheepfold-log-common
+	lock_common="${0%/*}/sheepfold-lock-common"
+	[ -r "$lock_common" ] || lock_common=/usr/libexec/sheepfold/sheepfold-lock-common
+	. "$log_common" || exit 1
+	. "$lock_common" || exit 1
+	log_file="$(sheepfold_log_path_read uci "$EVENTS_LOG")" || exit 1
+	sheepfold_log_path_check "$log_file" allow-missing || exit 1
+	sheepfold_lock_acquire "${SHEEPFOLD_LOG_LOCK:-/tmp/sheepfold/log-maintenance.flock}" 5 || exit 1
+	trap 'sheepfold_lock_release' EXIT
+	trap 'exit 1' HUP INT TERM
+	# Пока ожидали lock, путь мог измениться. Используем повторно проверенную
+	# настройку, а не запасной events.log при ошибке UCI.
+	log_file="$(sheepfold_log_path_read uci "$EVENTS_LOG")" || exit 1
+	sheepfold_log_path_check "$log_file" allow-missing || exit 1
+	[ -f "$log_file" ] || exit 4
+	cp "$log_file" "$destination" || exit 1
+	chmod 600 "$destination" || exit 1
+	cmp -s "$log_file" "$destination" || exit 1
+	current_path="$(sheepfold_log_path_read uci "$EVENTS_LOG")" || exit 1
+	[ "$current_path" = "$log_file" ] || exit 1
+	sheepfold_log_path_check "$log_file" || exit 1
+)
+
 cmd_push_events() (
-	local logs_id verify_json
+	local logs_id verify_json work snapshot_status
 
 	[ "$(global_get log_storage ram)" = "google_drive" ] || return 0
-	[ -f "$EVENTS_LOG" ] || return 0
+	umask 077
+	work="$(drive_workdir)" || {
+		printf '{"ok":false,"error":"events_snapshot_failed"}\n'
+		return 1
+	}
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	snapshot_status=0
+	drive_events_snapshot "$work/events.log" || snapshot_status=$?
+	case "$snapshot_status" in
+		0) ;;
+		4) return 0 ;;
+		*)
+			write_sync_status push-events false "events snapshot failed" >/dev/null 2>&1 || :
+			printf '{"ok":false,"error":"events_snapshot_failed"}\n'
+			return 1
+			;;
+	esac
 	require_tooling || return 1
 	drive_context_begin || return 1
 
 	cache_folder_ids || return 1
 	logs_id="$(folder_id_from_cache logs)" || return 1
 
-	verify_json="$(upload_and_verify "$logs_id" "$EVENTS_LOG" events.log)" || {
+	# Проверяем неизменяемую локальную копию. Новая строка живого журнала
+	# во время HTTP не отменяет успешную отправку уже подготовленного снимка.
+	verify_json="$(upload_and_verify "$logs_id" "$work/events.log" events.log)" || {
 		write_sync_status push-events false "upload verify failed"
 		printf '%s\n' "$verify_json"
 		return 1
@@ -1474,7 +1524,7 @@ cmd_push_events() (
 )
 
 cmd_archive_push() (
-	local logs_id backups_id quota quota_bytes pushed errors archive events_copy backup_file work stamp
+	local logs_id backups_id quota quota_bytes pushed errors archive events_copy backup_file work stamp snapshot_status
 	[ "$(global_get log_storage ram)" = "google_drive" ] || return 0
 	# Старый флаг authorized не доказывает текущий доступ и не является
 	# согласием на загрузку. Его задаёт log_storage; токен проверит поиск папок.
@@ -1491,19 +1541,15 @@ cmd_archive_push() (
 		drive_archive_prepare_error backup_prepare_failed
 		return 1
 	}
-	events_copy=''
-	if [ -L "$EVENTS_LOG" ] || { [ -e "$EVENTS_LOG" ] && [ ! -f "$EVENTS_LOG" ]; }; then
-		drive_archive_prepare_error events_snapshot_failed
-		return 1
-	fi
-	if [ -f "$EVENTS_LOG" ]; then
-		stamp="$(drive_archive_stamp)" || { drive_archive_prepare_error events_snapshot_failed; return 1; }
-		events_copy="$work/events-$stamp.log"
-		cp "$EVENTS_LOG" "$events_copy" && chmod 600 "$events_copy" && cmp -s "$EVENTS_LOG" "$events_copy" || {
-			drive_archive_prepare_error events_snapshot_failed
-			return 1
-		}
-	fi
+	stamp="$(drive_archive_stamp)" || { drive_archive_prepare_error events_snapshot_failed; return 1; }
+	events_copy="$work/events-$stamp.log"
+	snapshot_status=0
+	drive_events_snapshot "$events_copy" || snapshot_status=$?
+	case "$snapshot_status" in
+		0) ;;
+		4) events_copy='' ;;
+		*) drive_archive_prepare_error events_snapshot_failed; return 1 ;;
+	esac
 	drive_context_check || return 1
 	cache_folder_ids || return 1
 	logs_id="$(folder_id_from_cache logs)" || return 1

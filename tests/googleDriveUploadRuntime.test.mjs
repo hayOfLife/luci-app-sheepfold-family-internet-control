@@ -18,7 +18,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { describe, it } from 'node:test';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { shellTestPath } from '../tools/quality/testEnvironment.mjs';
@@ -55,6 +55,10 @@ function fixture(t, options = {}) {
     .replaceAll('/tmp/*', `${path(root)}/*`)
     .replaceAll('/usr/share/libubox/jshn.sh', path(join(bin, 'jshn.sh')))
     .replaceAll('/etc/init.d/sheepfold', path(join(root, 'no-service'))));
+  // Real path/lock helpers; only platform/API boundaries are modeled.
+  for (const name of ['sheepfold-log-common', 'sheepfold-lock-common']) {
+    put(name, readFileSync(join(runtime, name), 'utf8').replaceAll('/tmp/sheepfold', path(ram)));
+  }
   const archive = join(archiveDir, 'synthetic.tar'); writeFileSync(archive, payload);
   // Реальный config нужен для проверки обязательного backup. Его отсутствие
   // раньше скрывало подавленный отказ tar в положительных архивных сценариях.
@@ -84,9 +88,13 @@ args=[x for x in sys.argv[1:] if x!='-q']; opts=json.load(open(${JSON.stringify(
 if args[0]=='get':
  key=args[1].split('.')[-1]
  if key=='log_storage': print('google_drive')
+ elif key=='log_cache_path':
+  if 'logPath' not in opts: sys.exit(1)
+  print(opts['logPath'],end='')
  elif key in values and values[key] is not None: print(values[key],end='')
  else: sys.exit(1)
 elif args[0]=='show':
+ if args[1]=='sheepfold' and 'logPath' in opts: print('sheepfold.global.log_cache_path='+repr(opts['logPath']))
  print('sheepfold.gdrive=gdrive')
  for key,value in sorted(values.items()):
   if value is not None: print('sheepfold.gdrive.'+key+'='+repr(value))
@@ -190,6 +198,17 @@ if kind in ('upload','folderCreate'):
  data=arg('--data-binary',arg('-d'))
  if data.startswith('@'):
   p=pathlib.Path(data[1:]); event['bytes']=p.read_bytes().hex(); event['mode']=stat.S_IMODE(p.stat().st_mode); event['parentMode']=stat.S_IMODE(p.parent.stat().st_mode)
+if kind==opts.get('appendEventAt'):
+ import fcntl
+ lock=open(opts['logLock'],'a')
+ try:
+  fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+  with open(opts['liveLog'],'a') as journal: journal.write('new event during HTTP\\n')
+  event['journalAppendUnderLock']=True
+ except BlockingIOError: event['journalAppendUnderLock']=False
+ finally: lock.close()
+ opts['appendEventAt']=None
+ pathlib.Path(os.environ['GDRIVE_OPTIONS']).write_text(json.dumps(opts))
 if kind=='metadata' and opts.get('removeJshnAtMetadata'): pathlib.Path(opts['jshnFile']).unlink()
 if kind=='metadata' and opts.get('changeSource'): pathlib.Path(opts['archive']).write_text('concurrent data\\n')
 if opts.get('changeContextAt')==kind:
@@ -246,6 +265,18 @@ except (ValueError,KeyError,IndexError,AssertionError,TypeError): sys.exit(1)
   const run = (command = 'archive-push', args = []) => spawnSync(process.platform === 'win32' ? 'bash' : 'sh',
     ['-c', 'PATH="$1:$PATH"; export PATH; shift; exec sh "$@"', 'gdrive-fixture', path(bin), path(join(bin, 'sheepfold-google-drive')), command, ...args],
     { cwd: repo, env: { ...process.env, GDRIVE_OPTIONS: path(settings), GDRIVE_TRACE: path(traceFile) }, encoding: 'utf8', timeout: 20000 });
+  const runAsync = (command) => {
+    const child=spawn('sh',[path(join(bin,'sheepfold-google-drive')),command],{
+      cwd:repo,env:{...process.env,PATH:`${bin}:${process.env.PATH}`,GDRIVE_OPTIONS:path(settings),GDRIVE_TRACE:path(traceFile)},stdio:['ignore','pipe','pipe']});
+    let stdout='',stderr=''; child.stdout.on('data',(v)=>stdout+=v);child.stderr.on('data',(v)=>stderr+=v);
+    const timer=setTimeout(()=>child.kill('SIGKILL'),20000);timer.unref();
+    const finished=new Promise((resolveResult,reject)=>{
+      child.once('error',(error)=>{clearTimeout(timer);reject(error);});
+      child.once('close',(status)=>{clearTimeout(timer);resolveResult({status,stdout,stderr});});
+    });
+    t.after(()=>{if(child.exitCode===null)child.kill('SIGKILL');});
+    return {child,finished};
+  };
   const fault = (name, predicate, body) => {
     let real;
     if (existsSync(join(bin,name))) {
@@ -260,7 +291,7 @@ except (ValueError,KeyError,IndexError,AssertionError,TypeError): sys.exit(1)
     return spawnSync('sh',[path(join(bin,'function-run')),name,...args],{cwd:repo,
       env:{...process.env,PATH:`${bin}:${process.env.PATH}`,GDRIVE_OPTIONS:path(settings),GDRIVE_TRACE:path(traceFile)},encoding:'utf8',timeout:20000});
   };
-  return { root, bin, ram, archive, configFile, path, put, run, call, fault, cacheFile, authKey, folderKey, creds,
+  return { root, bin, ram, archive, configFile, path, put, run, runAsync, call, fault, cacheFile, authKey, folderKey, creds,
     update: (changes) => writeFileSync(settings, JSON.stringify({...JSON.parse(readFileSync(settings,'utf8')), ...changes})), trace: () => readFileSync(traceFile,'utf8').trim().split('\n').filter(Boolean).map((s) => JSON.parse(s)),
     leftovers: () => readdirSync(ram).filter((s) => /^\.gdrive-(?:upload|multipart|create-response)/.test(s)) };
 }
@@ -1413,5 +1444,160 @@ describe('Google Drive archive format controls',()=>{
     const f=fixture(t),work=workspace(f);f.fault('date','[ "${1:-}" = +%Y%m%d-%H%M%S ]',"printf incorrect; exit 0");
     const r=f.call('create_config_backup',[f.path(work)]);failed(r);assert.ok(f.trace().some((v)=>v.kind==='date-fault'));
     assert.deepEqual(readdirSync(work).filter((v)=>v.includes('.tar')),[]);
+  });
+});
+
+
+// Export the configured ordinary journal, not a hardcoded old file. Real flock
+// checks are Linux-only; all HTTP/UCI data are synthetic and stay in .build.
+describe('Google Drive configured journal snapshots',()=>{
+  const journalUploads=(f)=>f.trace().filter((v)=>v.kind==='upload' && /^events(?:-|\.)/.test(v.remoteName));
+  const noCloud=(f)=>assert.ok(!f.trace().some((v)=>['token','folderLookup','upload','delete'].includes(v.kind)),'invalid log reached cloud');
+  for(const command of ['push-events','archive-push']) {
+    it(`${command} exports the selected nested journal, never the stale default`,(t)=>{
+      const f=fixture(t);rmSync(f.archive);
+      const custom=join(f.ram,'custom logs','журнал.log');mkdirSync(join(f.ram,'custom logs'));
+      writeFileSync(custom,payload);writeFileSync(join(f.ram,'events.log'),('stale default journal'.padEnd(payloadBytes-1,'.')+'\n'));
+      f.update({logPath:f.path(custom)});const r=f.run(command);succeeded(r);
+      const sent=journalUploads(f);assert.equal(sent.length,1);assert.equal(Buffer.from(sent[0].bytes,'hex').toString(),payload);
+      assert.equal(readFileSync(custom,'utf8'),payload);assert.equal(readFileSync(join(f.ram,'events.log'),'utf8'),('stale default journal'.padEnd(payloadBytes-1,'.')+'\n'));
+    });
+    it(`${command} exports a configured journal without a default file`,(t)=>{
+      const f=fixture(t);rmSync(f.archive);const custom=join(f.ram,'selected.log');writeFileSync(custom,payload);
+      f.update({logPath:f.path(custom)});const r=f.run(command);succeeded(r);
+      assert.equal(journalUploads(f).length,1);assert.equal(Buffer.from(journalUploads(f)[0].bytes,'hex').toString(),payload);
+    });
+    it(`${command} does not replace an absent configured journal with an old default`,(t)=>{
+      const f=fixture(t);rmSync(f.archive);writeFileSync(join(f.ram,'events.log'),payload);
+      f.update({logPath:f.path(join(f.ram,'not-created','selected.log'))});const r=f.run(command);succeeded(r);
+      assert.equal(journalUploads(f).length,0);assert.equal(readFileSync(join(f.ram,'events.log'),'utf8'),payload);
+    });
+    for(const target of ['traversal','parent-symlink','leaf-symlink','directory']) {
+      it(`${command} rejects configured ${target} before remote work`,{skip:!native},(t)=>{
+        const f=fixture(t),outside=join(f.root,'outside');mkdirSync(outside);
+        const source=join(outside,'source.log');writeFileSync(source,payload);writeFileSync(join(f.ram,'events.log'),payload);
+        let logPath;
+        if(target==='traversal')logPath=f.path(f.ram)+'/../outside/source.log';
+        if(target==='parent-symlink'){symlinkSync(outside,join(f.ram,'linked'));logPath=f.path(join(f.ram,'linked','source.log'));}
+        if(target==='leaf-symlink'){symlinkSync(source,join(f.ram,'linked.log'));logPath=f.path(join(f.ram,'linked.log'));}
+        if(target==='directory'){const dir=join(f.ram,'log-dir');mkdirSync(dir);logPath=f.path(dir);}
+        f.update({logPath});const r=f.run(command);failed(r);noCloud(f);assert.ok(existsSync(f.archive));
+        assert.equal(readFileSync(source,'utf8'),payload);assert.deepEqual(f.leftovers(),[]);
+        assert.equal(JSON.parse(r.stdout).error,'events_snapshot_failed');
+      });
+    }
+    it(`${command} stops on unreadable log settings rather than exporting the default`,(t)=>{
+      const f=fixture(t);writeFileSync(join(f.ram,'events.log'),payload);
+      f.update({logPath:f.path(join(f.ram,'selected.log'))});
+      f.fault('uci','[ "${2:-}" = get ] && [ "${3:-}" = sheepfold.global.log_cache_path ]','printf partial; exit 7');
+      const r=f.run(command);failed(r);assert.ok(f.trace().some((v)=>v.kind==='uci-fault'));noCloud(f);assert.ok(existsSync(f.archive));
+    });
+    it(`${command} holds the shared journal lock while copying`,{skip:!native},(t)=>{
+      const f=fixture(t);rmSync(f.archive);const journal=join(f.ram,'events.log');writeFileSync(journal,payload);
+      const real=spawnSync('sh',['-c','command -v cp'],{encoding:'utf8'}).stdout.trim();
+      const lock=q(f.path(join(f.ram,'log-maintenance.flock')));
+      f.fault('cp','[ "${1:-}" = '+q(f.path(journal))+' ]',
+        `if flock -n ${lock} true; then printf '{"kind":"copy-lock","held":false}\n' >> "$GDRIVE_TRACE"; else printf '{"kind":"copy-lock","held":true}\n' >> "$GDRIVE_TRACE"; fi; exec ${q(real)} "$@"`);
+      const r=f.run(command);succeeded(r);const copies=f.trace().filter((v)=>v.kind==='copy-lock');
+      assert.ok(copies.length>0);assert.ok(copies.every((v)=>v.held));assert.deepEqual(f.leftovers(),[]);
+    });
+    it(`${command} releases the journal lock before HTTP and accepts a later live event`,{skip:!native},(t)=>{
+      const f=fixture(t);rmSync(f.archive);const journal=join(f.ram,'events.log');writeFileSync(journal,payload);
+      f.update({appendEventAt:'metadata',liveLog:f.path(journal),logLock:f.path(join(f.ram,'log-maintenance.flock'))});
+      const r=f.run(command);succeeded(r);assert.ok(f.trace().some((v)=>v.journalAppendUnderLock===true));
+      assert.equal(Buffer.from(journalUploads(f)[0].bytes,'hex').toString(),payload);
+      assert.equal(readFileSync(journal,'utf8'),payload+'new event during HTTP\n');assert.deepEqual(f.leftovers(),[]);
+    });
+    it(`${command} stops when the shared lock is unavailable`,(t)=>{
+      const f=fixture(t);writeFileSync(join(f.ram,'events.log'),payload);
+      f.fault('flock','[ "${1:-}" = -n ]','exit 1');f.fault('sleep',':','exit 0');
+      const r=f.run(command);failed(r);assert.ok(f.trace().some((v)=>v.kind==='flock-fault'));noCloud(f);
+      assert.ok(existsSync(f.archive));assert.deepEqual(f.leftovers(),[]);
+    });
+  }
+});
+
+
+describe('Google Drive journal snapshot failure boundaries',()=>{
+  const noCloud=(f)=>assert.ok(!f.trace().some((v)=>['token','folderLookup','upload','delete'].includes(v.kind)));
+  for(const command of ['push-events','archive-push']) {
+    for(const option of ['absent','empty']) it(`${command} keeps the default for ${option} path setting`,(t)=>{
+      const f=fixture(t);rmSync(f.archive);writeFileSync(join(f.ram,'events.log'),payload);
+      if(option==='empty')f.update({logPath:''});succeeded(f.run(command));
+      assert.ok(f.trace().some((v)=>v.kind==='upload' && /^events(?:-|\.)/.test(v.remoteName)));
+    });
+    it(`${command} does not change an existing copy after a path change during snapshot`,(t)=>{
+      const f=fixture(t),journal=join(f.ram,'events.log');writeFileSync(journal,payload);
+      const real=spawnSync('sh',['-c','command -v cp'],{encoding:'utf8'}).stdout.trim();
+      f.fault('cp','[ "${1:-}" = '+q(f.path(journal))+' ]',
+        `${q(real)} "$@" || exit $?; python3 -S -c 'import os,json; p=os.environ["GDRIVE_OPTIONS"]; v=json.load(open(p));v["logPath"]="/invalid/changed.log";open(p,"w").write(json.dumps(v))'; exit 0`);
+      const r=f.run(command);failed(r);assert.ok(f.trace().some((v)=>v.kind==='cp-fault'));noCloud(f);
+      assert.equal(readFileSync(journal,'utf8'),payload);assert.ok(existsSync(f.archive));assert.deepEqual(f.leftovers(),[]);
+    });
+    it(`${command} rejects a settings backend failure even with a default journal`,(t)=>{
+      const f=fixture(t);writeFileSync(join(f.ram,'events.log'),payload);
+      f.fault('uci','[ "${2:-}" = show ] && [ "${3:-}" = sheepfold ]',"printf 'partial'; exit 7");
+      const r=f.run(command);failed(r);assert.ok(f.trace().some((v)=>v.kind==='uci-fault'));noCloud(f);assert.ok(existsSync(f.archive));
+    });
+  }
+  for(const name of ['cp','chmod','cmp']) it(`push-events rejects ${name} failure before any cloud action`,(t)=>{
+    const f=fixture(t),journal=join(f.ram,'events.log');writeFileSync(journal,payload);
+    const condition=name==='cp'?'[ "${1:-}" = '+q(f.path(journal))+' ]':name==='chmod'?
+      'case "${2:-}" in */.gdrive-upload.*/events.log) true;; *) false;; esac':'[ "${2:-}" = '+q(f.path(journal))+' ]';
+    f.fault(name,condition,'exit 7');const r=f.run('push-events');failed(r);
+    assert.ok(f.trace().some((v)=>v.kind===name+'-fault'));noCloud(f);assert.equal(readFileSync(journal,'utf8'),payload);
+    assert.equal(JSON.parse(r.stdout).error,'events_snapshot_failed');assert.deepEqual(f.leftovers(),[]);
+  });
+  it('push-events reports an owned-workspace failure without deleting another directory',(t)=>{
+    const f=fixture(t);writeFileSync(join(f.ram,'events.log'),payload);
+    const emergency=join(f.ram,'emergency');mkdirSync(emergency);writeFileSync(join(emergency,'copy'),'retain');
+    f.fault('mktemp',':',`printf '%s' ${q(f.path(emergency))}; exit 7`);
+    const r=f.run('push-events');failed(r);assert.ok(f.trace().some((v)=>v.kind==='mktemp-fault'));
+    assert.equal(JSON.parse(r.stdout).error,'events_snapshot_failed');noCloud(f);
+    assert.equal(readFileSync(join(emergency,'copy'),'utf8'),'retain');
+  });
+  it('push-events accepts a truly empty journal',(t)=>{
+    const f=fixture(t,{remoteSize:0});writeFileSync(join(f.ram,'events.log'),'');
+    const r=f.run('push-events');succeeded(r);assert.equal(JSON.parse(r.stdout).local_bytes,0);
+    assert.equal(f.trace().find((v)=>v.kind==='upload').bytes,'');
+  });
+  it('push-events without a journal remains a no-op without HTTP',(t)=>{
+    const f=fixture(t);const r=f.run('push-events');succeeded(r);assert.equal(r.stdout,'');noCloud(f);
+    assert.deepEqual(f.leftovers(),[]);assert.ok(existsSync(f.archive));
+  });
+});
+
+const waitForEvidence=async(check)=>{
+  const until=Date.now()+8000;
+  while(!check()){if(Date.now()>until)throw new Error('barrier evidence was not reached');await new Promise((r)=>setTimeout(r,20));}
+};
+describe('Google Drive journal shared-lock coordination',{skip:!native},()=>{
+  for(const command of ['push-events','archive-push']) it(`${command} waits for an actual writer lock before reading`,async(t)=>{
+    const f=fixture(t);rmSync(f.archive);const journal=join(f.ram,'events.log');writeFileSync(journal,payload);
+    const lock=join(f.ram,'log-maintenance.flock');
+    const holder=spawn('flock',['-x',lock,'sh','-c','printf ready; cat >/dev/null'],{stdio:['pipe','pipe','pipe']});
+    let ready='';holder.stdout.on('data',(data)=>ready+=data);holder.stderr.resume();
+    let released=false;
+    const holderDone=new Promise((done)=>holder.once('close',done));
+    t.after(()=>{holder.stdin.end();if(holder.exitCode===null)holder.kill('SIGKILL');});
+    const real=spawnSync('sh',['-c','command -v flock'],{encoding:'utf8'}).stdout.trim();
+    f.fault('flock','[ "${1:-}" = -n ]',`exec ${q(real)} "$@"`);
+    const cp=spawnSync('sh',['-c','command -v cp'],{encoding:'utf8'}).stdout.trim();
+    f.fault('cp','[ "${1:-}" = '+q(f.path(journal))+' ]',`exec ${q(cp)} "$@"`);
+    await waitForEvidence(()=>ready==='ready');
+    const upload=f.runAsync(command);
+    try {
+      await waitForEvidence(()=>f.trace().some((v)=>v.kind==='flock-fault') || upload.child.exitCode!==null);
+      assert.ok(f.trace().some((v)=>v.kind==='flock-fault'),'uploader never attempted the shared lock');
+      assert.ok(!f.trace().some((v)=>v.kind==='cp-fault'),'copied while writer held the lock');
+      assert.ok(!f.trace().some((v)=>v.kind==='upload'),'started HTTP before snapshot was available');
+      holder.stdin.end();released=true;await holderDone;
+      const result=await upload.finished;succeeded(result);
+      assert.ok(f.trace().some((v)=>v.kind==='cp-fault'));assert.ok(f.trace().some((v)=>v.kind==='upload'));
+    } finally {
+      if(!released)holder.stdin.end();
+      // Drain the uploader before fixture cleanup, including a failing baseline.
+      await upload.finished;
+    }
   });
 });

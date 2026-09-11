@@ -114,8 +114,8 @@ export const impactRules = Object.freeze([
     categories: ['backend', 'security', 'packaging'],
     checks: ['routerReadOnly'],
     risk: 'high',
-    directTests: Object.freeze(['legacyLogRuntime.test.mjs', 'logWriterRuntime.test.mjs', 'maintenanceJobs.test.mjs', 'maintenanceRotationRuntime.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']),
-    review: 'Проверить writer, API и ротацию RAM-пути, права/lock, отказы UCI и наличие общей библиотеки в обеих редакциях; облачный транспорт — отдельная граница.',
+    directTests: Object.freeze(['legacyLogRuntime.test.mjs', 'logWriterRuntime.test.mjs', 'maintenanceJobs.test.mjs', 'maintenanceRotationRuntime.test.mjs', 'googleDriveUploadRuntime.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']),
+    review: 'Проверить writer, API, ротацию и Google Drive snapshot как потребителей RAM-пути; права/lock, отказы UCI и наличие общей библиотеки в обеих редакциях. HTTP-модель не доказывает облачную доставку.',
   }),
 
   Object.freeze({

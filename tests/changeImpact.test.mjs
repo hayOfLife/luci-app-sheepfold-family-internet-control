@@ -45,10 +45,10 @@ describe('change impact advisor §impact1', () => {
     assert.ok(!recommendedCommands(report).automatic.includes(command));
   });
 
-  it('selects writer, API, maintenance and packaging for the shared journal path', () => {
+  it('selects writer, API, maintenance, Google export and packaging for the shared journal path', () => {
     const report = inspectChanges(['package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-log-common']);
     assert.deepEqual(report.unknown, []);
-    for (const name of ['logWriterRuntime.test.mjs', 'legacyLogRuntime.test.mjs', 'maintenanceJobs.test.mjs', 'maintenanceRotationRuntime.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']) {
+    for (const name of ['logWriterRuntime.test.mjs', 'legacyLogRuntime.test.mjs', 'maintenanceJobs.test.mjs', 'maintenanceRotationRuntime.test.mjs', 'googleDriveUploadRuntime.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']) {
       assert.ok(report.directTests.includes(name), `missing direct consumer ${name}`);
     }
   });

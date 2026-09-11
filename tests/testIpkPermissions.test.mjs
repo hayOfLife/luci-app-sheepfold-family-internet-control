@@ -103,6 +103,10 @@ describe('test IPK executable permissions', () => {
     assert.match(dataText(ipk, `${base}sheepfold-log`), /\. "\$LOG_COMMON"/);
     assert.match(dataText(ipk, `${base}sheepfold-api-legacy`), /sheepfold-log-common/);
     assert.match(controlText(ipk, './postinst'), /sheepfold-log-common/);
+    const uploader = dataText(ipk, `${base}sheepfold-google-drive`);
+    assert.match(uploader, /sheepfold-log-common/);
+    assert.match(uploader, /sheepfold-lock-common/);
+    assert.match(uploader, /drive_events_snapshot\(\)/);
   });
 
   it('ships router-control-legacy as executable in data.tar.gz', () => {
