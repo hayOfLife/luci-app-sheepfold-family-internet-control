@@ -329,16 +329,103 @@ usage_state() {
 	fi
 }
 
-write_sync_status() {
-	command_name="$1"
-	ok="$2"
-	message="$3"
-	mkdir -p /tmp/sheepfold 2>/dev/null || true
-	printf '{"command":"%s","ok":%s,"message":"%s","at":"%s"}\n' \
-		"$(json_escape "$command_name")" "$ok" "$(json_escape "$message")" "$(date '+%Y-%m-%dT%H:%M:%S%z')" \
-		>"$SYNC_STATUS_FILE"
-	chmod 600 "$SYNC_STATUS_FILE" 2>/dev/null || true
+# Статус — результат последнего завершённого прохода, не журнал всех попыток.
+# Изолируем переменные и публикуем один готовый файл: reader не видит половину JSON.
+yandex_sync_path_ok() {
+	[ ! -L /tmp/sheepfold ] && [ -d /tmp/sheepfold ] || return 1
+	[ ! -L "$SYNC_STATUS_FILE" ] || return 1
+	[ ! -e "$SYNC_STATUS_FILE" ] || [ -f "$SYNC_STATUS_FILE" ]
 }
+
+yandex_sync_quote() {
+	# Только представление строки: управляющие байты не удаляются и не становятся
+	# пробелами. Общий legacy serializer вне sync-status этим не объявлен исправным.
+	printf '%s\n' "$1" | LC_ALL=C awk '
+		BEGIN { for (i = 1; i < 32; i++) esc[sprintf("%c", i)] = sprintf("\\u%04x", i) }
+		{
+			if (NR > 1) printf "\\n"
+			for (i = 1; i <= length($0); i++) {
+				c = substr($0, i, 1)
+				if (c == "\\") printf "\\\\"
+				else if (c == "\"") printf "\\\""
+				else if (c in esc) printf "%s", esc[c]
+				else printf "%s", c
+			}
+		}'
+}
+
+yandex_sync_json() (
+	[ "$#" -eq 4 ] || exit 1
+	case "$1" in push-events|archive-push) ;; *) exit 1 ;; esac
+	case "$2" in true|false) ;; *) exit 1 ;; esac
+	LC_ALL=C; export LC_ALL
+	[ "${#3}" -le 1024 ] || exit 1
+	case "$4" in
+		[0-9][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-6][0-9][+-][0-2][0-9][0-5][0-9]) ;;
+		*) exit 1 ;;
+	esac
+	messageJson="$(yandex_sync_quote "$3")" || exit 1
+	printf '{"command":"%s","ok":%s,"message":"%s","at":"%s"}\n' "$1" "$2" "$messageJson" "$4"
+)
+
+write_sync_status() (
+	[ "$#" -eq 3 ] || exit 1
+	stamp="$(date '+%Y-%m-%dT%H:%M:%S%z')" || exit 1
+	payload="$(yandex_sync_json "$1" "$2" "$3" "$stamp")" || exit 1
+	umask 077
+	[ ! -L /tmp/sheepfold ] || exit 1
+	mkdir -p /tmp/sheepfold || exit 1
+	chmod 700 /tmp/sheepfold || exit 1
+	yandex_sync_path_ok || exit 1
+	work="$(mktemp -d /tmp/sheepfold/.yandex-sync.XXXXXX)" || exit 1
+	# Неудачный mktemp не даёт права удалять напечатанный им чужой каталог.
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	chmod 700 "$work" || exit 1
+	printf '%s\n' "$payload" >"$work/status.json" || exit 1
+	chmod 600 "$work/status.json" || exit 1
+	yandex_sync_path_ok || exit 1
+	mv -f "$work/status.json" "$SYNC_STATUS_FILE" || exit 1
+)
+
+# trap охватывает и ранние отказы tooling/root/MKCOL, не меняя set -e внутри
+# основной команды. Служебная запись не отменяет уже выполненный PUT или его JSON.
+yandex_sync_finish() {
+	local result="$1" action="$2" skipped="${3:-0}" ok message
+	trap - EXIT
+	[ "$skipped" -ne 1 ] || exit 0
+	case "$action:$result" in push-events:4) exit 0 ;; esac
+	ok=false
+	message='completed with errors'
+	if [ "$result" -eq 0 ]; then
+		ok=true
+		case "$action" in push-events) message='events.log uploaded' ;; *) message='archive push completed' ;; esac
+	fi
+	if ! write_sync_status "$action" "$ok" "$message" >/dev/null; then
+		printf '%s\n' 'Sheepfold: Yandex sync status could not be saved; operation result is unchanged.' >&2
+	fi
+	exit "$result"
+}
+
+yandex_sync_run() (
+	action="$1"
+	skipped=0
+	trap 'yandex_sync_finish "$?" "$action" "$skipped"' EXIT
+	trap 'exit 1' HUP INT TERM
+	# Неуспешное get не является выбором другого backend. Отсутствующая опция
+	# допустима только после подтверждения show; частичный вывод отбрасывается.
+	if ! backend="$(uci -q get sheepfold.global.log_storage 2>/dev/null)"; then
+		settings="$(uci -q show sheepfold.global 2>/dev/null)" || {
+			yandex_transfer_error storage_unavailable; exit 1;
+		}
+		case "
+$settings" in *'
+sheepfold.global.log_storage='*) yandex_transfer_error storage_unavailable; exit 1 ;; esac
+		backend=ram
+	fi
+	[ "$backend" = yandex_disk ] || { skipped=1; exit 0; }
+	"$2"
+)
 
 yandex_transfer_error() {
 	printf '{"ok":false,"error":"%s"}\n' "$1"
@@ -479,8 +566,6 @@ create_config_backup() (
 )
 
 yandex_archive_prepare_error() {
-	# Неудача служебного статуса не должна скрывать исходную ошибку подготовки.
-	write_sync_status archive-push false "completed with errors" >/dev/null 2>&1 || :
 	printf '{"ok":false,"error":"%s","pushed":0,"errors":1}\n' "$1"
 	return 1
 }
@@ -838,21 +923,19 @@ yandex_events_snapshot() (
 )
 
 cmd_push_events() (
-	[ "$(global_get log_storage ram)" = "yandex_disk" ] || return 0
 	umask 077
 	work="$(yandex_archive_workdir)" || {
 		printf '{"ok":false,"error":"events_snapshot_failed"}\n'
 		return 1
 	}
-	trap 'rm -rf "$work"' EXIT
+	trap 'result=$?; trap - EXIT; rm -rf "$work" || printf "Sheepfold: Yandex work cleanup failed.\n" >&2; exit "$result"' EXIT
 	trap 'exit 1' HUP INT TERM
 	snapshotStatus=0
 	yandex_events_snapshot "$work/events.log" || snapshotStatus=$?
 	case "$snapshotStatus" in
 		0) ;;
-		4) return 0 ;;
+		4) return 4 ;;
 		*)
-			write_sync_status push-events false "events snapshot failed" >/dev/null 2>&1 || :
 			printf '{"ok":false,"error":"events_snapshot_failed"}\n'
 			return 1 ;;
 	esac
@@ -875,17 +958,14 @@ cmd_push_events() (
 	# Uploader сравнивает именно снимок. Новое событие в живом журнале не
 	# отменяет уже подтверждённую копию и остаётся для следующей отправки.
 	verify_json="$(upload_and_verify "$work/events.log" "$remote_path")" || {
-		write_sync_status push-events false "upload verify failed"
 		printf '%s\n' "$verify_json"
 		return 1
 	}
 
-	write_sync_status push-events true "events.log uploaded"
 	printf '%s\n' "$verify_json"
 )
 
 cmd_archive_push() (
-	[ "$(global_get log_storage ram)" = "yandex_disk" ] || return 0
 	require_tooling || return 1
 	# Просмотр больше не записывает authorized. Явная отправка проверяет доступ
 	# сейчас, а не полагается на исторический флаг и не сохраняет чужой UCI.
@@ -900,7 +980,7 @@ cmd_archive_push() (
 	# удалению отправленных RAM-архивов. Сбой tar не означает «копия не нужна».
 	umask 077
 	work="$(yandex_archive_workdir)" || { yandex_archive_prepare_error backup_prepare_failed; return 1; }
-	trap 'rm -rf "$work"' EXIT
+	trap 'result=$?; trap - EXIT; rm -rf "$work" || printf "Sheepfold: Yandex work cleanup failed.\n" >&2; exit "$result"' EXIT
 	trap 'exit 1' HUP INT TERM
 	backup_file="$(create_config_backup "$work")" || {
 		yandex_archive_prepare_error backup_prepare_failed
@@ -961,22 +1041,65 @@ cmd_archive_push() (
 	prune_remote_logs "$root" "$quota_bytes" || true
 
 	if [ "$errors" -gt 0 ]; then
-		write_sync_status archive-push false "completed with errors"
 		printf '{"ok":false,"pushed":%d,"errors":%d}\n' "$pushed" "$errors"
 		return 1
 	fi
 
-	write_sync_status archive-push true "archive push completed"
 	printf '{"ok":true,"pushed":%d,"errors":0}\n' "$pushed"
 )
 
-cmd_sync_status() {
-	if [ -r "$SYNC_STATUS_FILE" ]; then
-		cat "$SYNC_STATUS_FILE"
-		return 0
+yandex_sync_read() (
+	yandex_sync_path_ok || exit 1
+	[ -f "$SYNC_STATUS_FILE" ] || exit 4
+	# Ограничиваем именно чтение, а не размер уже загруженного в shell ответа.
+	LC_ALL=C; export LC_ALL
+	payload="$(head -c 8193 "$SYNC_STATUS_FILE" && printf .)" || exit 1
+	payload="${payload%.}"
+	[ -n "$payload" ] && [ "${#payload}" -le 8192 ] || exit 1
+	# jshn уже входит в обе редакции. Его shell API использует unset-переменные;
+	# снимаем nounset только в этом subshell и явно проверяем обязательные поля.
+	set +u
+	[ -r /usr/share/libubox/jshn.sh ] || exit 1
+	. /usr/share/libubox/jshn.sh || exit 1
+	json_init || exit 1
+	jsonScript="$(jshn -r "$payload")" || exit 1
+	# Только проверенный вывод штатного parser, никогда сам текст cache.
+	eval "$jsonScript" || exit 1
+	json_get_keys keys || exit 1
+	count=0
+	for key in $keys; do
+		case "$key" in command|ok|message|at) ;; *) exit 1 ;; esac
+		count=$((count + 1))
+	done
+	[ "$count" -eq 4 ] || exit 1
+	for key in command message at; do
+		json_get_type valueType "$key" || exit 1
+		[ "$valueType" = string ] || exit 1
+	done
+	json_get_type valueType ok || exit 1
+	[ "$valueType" = boolean ] || exit 1
+	json_get_var action command || exit 1
+	json_get_var ok ok || exit 1
+	json_get_var message message || exit 1
+	json_get_var stamp at || exit 1
+	case "$ok" in 1) ok=true ;; 0) ok=false ;; *) exit 1 ;; esac
+	yandex_sync_json "$action" "$ok" "$message" "$stamp"
+)
+
+cmd_sync_status() (
+	# Отсутствие RAM-каталога допустимо после reboot. Ссылка или отказ чтения
+	# не означает «синхронизации ещё не было» и не разрешает выдавать чужой файл.
+	if [ ! -e /tmp/sheepfold ] && [ ! -L /tmp/sheepfold ]; then
+		printf '{"ok":false,"message":"no sync yet"}\n'; exit 0
 	fi
-	printf '{"ok":false,"message":"no sync yet"}\n'
-}
+	result=0
+	payload="$(yandex_sync_read)" || result=$?
+	case "$result" in
+		0) printf '%s\n' "$payload" ;;
+		4) printf '{"ok":false,"message":"no sync yet"}\n' ;;
+		*) printf '{"ok":false,"error":"sync_status_unavailable"}\n'; exit 1 ;;
+	esac
+)
 
 command_name="${1:-}"
 shift || true
@@ -988,8 +1111,8 @@ case "$command_name" in
 	restore-config) cmd_restore_config "$1" ;;
 	sync-status) cmd_sync_status ;;
 	verify) verify_upload "${1:-}" "${2:-}" ;;
-	push-events) cmd_push_events ;;
-	archive-push) cmd_archive_push ;;
+	push-events) yandex_sync_run push-events cmd_push_events ;;
+	archive-push) yandex_sync_run archive-push cmd_archive_push ;;
 	*)
 		echo "Usage: sheepfold-yandex-disk <status|test|list|download|restore-config|sync-status|verify|push-events|archive-push>" >&2
 		exit 1
