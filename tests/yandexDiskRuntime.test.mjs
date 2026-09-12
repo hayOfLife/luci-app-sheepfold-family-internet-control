@@ -101,18 +101,23 @@ if kind=='uci':
 values={}; headers=[]; urls=[]; i=0
 while i<len(args):
  arg=args[i]
- if arg in ('-m','--max-time','-o','--output','-w','--write-out','-u','--user','-X','--request','-H','--header','--url','--proto','--proto-redir','-T'):
+ if arg in ('-m','--max-time','-o','--output','-w','--write-out','-u','--user','-X','--request','-H','--header','--url','--proto','--proto-redir','-T','-D'):
   value=args[i+1]; values[arg]=value; i+=2
   if arg in ('-H','--header'): headers.append(value)
   if arg=='--url': urls.append(value)
  elif arg.startswith('-'): i+=1
  else: urls.append(arg); i+=1
-method=values.get('-X',values.get('--request','PUT' if '-T' in values else 'GET'))
+method=values.get('-X',values.get('--request','HEAD' if '--head' in args else ('PUT' if '-T' in values else 'GET')))
 url=urls[-1] if urls else ''
 probe=url=='https://webdav.yandex.ru/'
 http=str(opts.get('probeHttp',207) if probe else opts.get('readHttp',207))
 exit_code=int(opts.get('probeExit',0) if probe else opts.get('readExit',0))
 body=opts.get('body','')
+if method=='HEAD':
+ http=str(opts.get('headHttp',200)); exit_code=int(opts.get('headExit',0)); body=''
+ if '-D' in values: pathlib.Path(values['-D']).write_text('HTTP/1.1 200 OK\\r\\nContent-Length: 19\\r\\n\\r\\n')
+if method=='PUT':
+ http=str(opts.get('putHttp',201)); exit_code=int(opts.get('putExit',0)); body=''
 if method=='MKCOL':
  index=sum(1 for line in open(os.environ['YANDEX_TRACE']) if json.loads(line).get('method')=='MKCOL')
  codes=opts.get('mkcolCodes', [opts.get('mkcolHttp',403)])
@@ -161,7 +166,7 @@ const curls = (f) => f.events().filter((e)=>e.kind==='curl');
 describe('Yandex WebDAV request boundary', () => {
   for (const [name, command, depth] of [
     ['folder size', 'folder_used_bytes /sheepfold', '1'],
-    ['file size', 'remote_file_bytes /sheepfold/logs/test.log', '0'],
+    // Размер одного файла с r318 проверяет HEAD-контракт yandexUploadRuntime.
     ['folder list helper', 'propfind_folder_json_array /sheepfold/logs', '1'],
   ]) it(`passes a single Depth header and no extra URL for ${name}`, (t) => {
     const f=fixture(t); const result=f.helper(command);

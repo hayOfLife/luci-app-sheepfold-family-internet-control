@@ -439,3 +439,9 @@ revision; неизвестный global state отключает обе кома
 Yandex local archive preparation (r317, B114–B115): `tests/yandexBackupRuntime.test.mjs`,
 `sheepfold-yandex-disk`, [протокол](../audit-fixes-r317.ru.md). Без новых тегов;
 действующий WebDAV-контракт `§ydav001` не означает готовый XML/restore.
+
+Yandex upload confirmation (r318, B116–B118): `tests/yandexUploadRuntime.test.mjs`,
+`sheepfold-yandex-disk`, [протокол](../audit-fixes-r318.ru.md). В рамках `§ydav001`
+PUT/HEAD проверяются отдельно; snapshot и проверка смены настроек охватывают один
+transfer, не общую транзакцию. HEAD без Content-Length отказывает; XML/quota/restore
+не объявлены готовыми. Контроль размера не равен checksum.

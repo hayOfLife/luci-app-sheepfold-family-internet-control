@@ -892,3 +892,19 @@ mutation и status observation safety. Непосредственные сосе
 Положительная модель uploader доказывает подготовку, не доставку; полный native
 uploader пока обязан сообщить собственный известный отказ, а не фиктивный успех.
 Точные команды, прошлые неуспехи и зависимости: [r317](audit-fixes-r317.ru.md).
+
+## Выборочные проверки Yandex PUT и HEAD (r318)
+
+`yandexUploadRuntime.test.mjs` исполняет настоящий uploader/verify и архивный caller,
+с реальными файлами и моделями UCI/curl. Fault-утилита выбирается только там, где
+проверяется её отказ; trace доказывает достижение. Из корня, при Node/Python/POSIX:
+
+```sh
+node scripts/run-test-category.mjs --file yandexUploadRuntime.test.mjs --file yandexDiskRuntime.test.mjs --file yandexBackupRuntime.test.mjs
+```
+
+Exit 0 и отсутствие fail/skipped подтверждают локальную границу. Все фикстуры
+создаются в `.build` и убираются при нормальном завершении. Настоящие Яндекс/TLS
+сервиса, OpenWrt и восстановление этим не проверены. Для нового HTTP-контракта есть
+дополнительный loopback TLS-стенд в поставленных доказательствах; точный запуск,
+сертификат и сравнение staged/baseline описаны в [r318](audit-fixes-r318.ru.md).

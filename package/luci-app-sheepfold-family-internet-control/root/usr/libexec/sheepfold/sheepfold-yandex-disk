@@ -230,13 +230,90 @@ folder_used_bytes() {
 	'
 }
 
-remote_file_bytes() {
-	local url
-	remote_path="$1"
-	url="$(webdav_url "$remote_path")" || return 1
-	response="$(webdav_request PROPFIND "$url" 0)" || return 1
-	printf '%s' "$response" | sed -n 's/.*getcontentlength>\([0-9]*\).*/\1/p' | head -1
-}
+# Проверяем размер одного объекта через HEAD, не регулярным выражением по DAV XML.
+# Сервер вправе не вернуть Content-Length: тогда подтверждения нет, а не «ноль».
+yandex_transfer_workdir() (
+	umask 077
+	[ ! -L /tmp/sheepfold ] || exit 1
+	mkdir -p /tmp/sheepfold || exit 1
+	chmod 700 /tmp/sheepfold || exit 1
+	work="$(mktemp -d /tmp/sheepfold/.yandex-transfer.XXXXXX)" || exit 1
+	chmod 700 "$work" || { rm -rf "$work"; exit 1; }
+	printf '%s' "$work"
+)
+
+yandex_file_bytes() (
+	[ "$#" -eq 1 ] && [ -f "$1" ] && [ ! -L "$1" ] || exit 1
+	# Exit wc проверяется до нормализации; его частичный stdout не есть размер.
+	bytes="$(LC_ALL=C wc -c <"$1")" || exit 1
+	printf '%s\n' "$bytes" | LC_ALL=C awk '
+		NR != 1 { bad = 1; exit 1 }
+		{ sub(/^[ \t]+/, ""); sub(/[ \t]+$/, "")
+		  if ($0 !~ /^[0-9]+$/) { bad = 1; exit 1 }
+		  sub(/^0+/, ""); if ($0 == "") $0 = "0"
+		  if (length($0) > 18) { bad = 1; exit 1 }; value = $0 }
+		END { if (bad || NR != 1) exit 1; printf "%s", value }
+	'
+)
+
+# Ограниченная сверка одного PUT/HEAD-прохода. Это не блокировка UCI и не
+# снимок всей архивной команды; она не разрешает смешивать замеченные настройки.
+yandex_transfer_settings_ok() (
+	[ "${transferPinned:-0}" = 1 ] || exit 0
+	current="$(uci -q show sheepfold.cloud 2>/dev/null)" || exit 1
+	[ "$current" = "$transferSettings" ]
+)
+
+remote_file_bytes() (
+	[ "$#" -eq 1 ] && [ -n "$1" ] || exit 1
+	url="$(webdav_url "$1")" || exit 1
+	credentials_ready || exit 1
+	yandex_transfer_settings_ok || exit 1
+	work="$(yandex_transfer_workdir)" || exit 1
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	umask 077
+	# HTTP/1.1 даёт один известный формат status line. Промежуточные proxy/auth
+	# блоки не становятся метаданными: reader принимает только последний блок.
+	code="$(curl -q -g -sS -m 45 --proto '=https' --http1.1 --head \
+		-H 'Accept-Encoding: identity' -H 'Cache-Control: no-cache' \
+		-D "$work/headers" -o /dev/null -w '%{http_code}' \
+		-u "$login:$password" --url "$url")" || exit 1
+	[ "$code" = 200 ] || exit 1
+	yandex_transfer_settings_ok || exit 1
+	headerBytes="$(yandex_file_bytes "$work/headers")" || exit 1
+	[ "${#headerBytes}" -le 5 ] && [ "$headerBytes" -le 65536 ] || exit 1
+	LC_ALL=C awk '
+		function fail() { bad = 1; exit 1 }
+		{ sub(/\r$/, "") }
+		/^HTTP\/1\.[01] [1-5][0-9][0-9]( |$)/ {
+			if (seen && !closed) fail()
+			split($0, parts, " "); status = parts[2]; seen = 1; closed = 0
+			lengths = 0; size = ""; incompatible = 0; next
+		}
+		!seen || closed { fail() }
+		/^$/ { closed = 1; next }
+		/^[ \t]/ { fail() }
+		{
+			line = $0; gsub(/\t/, "", line)
+			if (line ~ /[[:cntrl:]]/ || $0 !~ /^[^:[:space:]]+:/) fail()
+			key = $0; sub(/:.*/, "", key); key = tolower(key)
+			value = $0; sub(/^[^:]+:/, "", value)
+			sub(/^[ \t]+/, "", value); sub(/[ \t]+$/, "", value)
+			if (key == "content-length") {
+				lengths++; if (value !~ /^[0-9]+$/) fail()
+				sub(/^0+/, "", value); if (value == "") value = "0"
+				if (length(value) > 18) fail(); size = value
+			}
+			if (key == "transfer-encoding" || key == "content-range" ||
+			    (key == "content-encoding" && tolower(value) != "identity")) incompatible = 1
+		}
+		END {
+			if (bad || !seen || !closed || status != "200" || lengths != 1 || incompatible) exit 1
+			printf "%s", size
+		}
+	' "$work/headers"
+)
 
 usage_state() {
 	used_bytes="$1"
@@ -263,62 +340,88 @@ write_sync_status() {
 	chmod 600 "$SYNC_STATUS_FILE" 2>/dev/null || true
 }
 
-verify_upload() {
+yandex_transfer_error() {
+	printf '{"ok":false,"error":"%s"}\n' "$1"
+	return 1
+}
+
+verify_upload() (
+	[ "$#" -eq 2 ] && [ -n "$1" ] && [ -n "$2" ] || {
+		yandex_transfer_error usage; exit 1;
+	}
 	local_path="$1"
 	remote_path="$2"
-	local_bytes remote_bytes
-
-	[ -f "$local_path" ] || {
-		printf '{"ok":false,"error":"local_missing"}\n'
-		return 1
+	local_bytes="$(yandex_file_bytes "$local_path")" || {
+		yandex_transfer_error local_read_failed; exit 1;
 	}
-
-	local_bytes="$(wc -c <"$local_path" | tr -d ' ')"
-	case "$local_bytes" in ''|*[!0-9]*) local_bytes=0 ;; esac
-	remote_bytes="$(remote_file_bytes "$remote_path" 2>/dev/null || true)"
-	case "$remote_bytes" in ''|*[!0-9]*) remote_bytes=0 ;; esac
-
-	if [ "$local_bytes" -gt 0 ] && [ "$local_bytes" -eq "$remote_bytes" ]; then
+	remote_bytes="$(remote_file_bytes "$remote_path")" || {
+		yandex_transfer_error remote_metadata_unavailable; exit 1;
+	}
+	# Строковое сравнение нормализованных чисел не переполняет shell на 32 bit.
+	# Пустой файл допустим, но лишь при подтверждённом remote Content-Length: 0.
+	if [ "$local_bytes" = "$remote_bytes" ]; then
 		printf '{"ok":true,"local_bytes":%s,"remote_bytes":%s}\n' "$local_bytes" "$remote_bytes"
 		return 0
 	fi
-
 	printf '{"ok":false,"error":"size_mismatch","local_bytes":%s,"remote_bytes":%s}\n' \
 		"$local_bytes" "$remote_bytes"
 	return 1
-}
+)
 
-upload_file() {
-	local url
+upload_file() (
+	[ "$#" -eq 2 ] && [ -f "$1" ] && [ ! -L "$1" ] || exit 1
+	local_path="$1"
+	url="$(webdav_url "$2")" || exit 1
+	credentials_ready || exit 1
+	yandex_transfer_settings_ok || exit 1
+	# Один URL, без curlrc, URL glob и redirect. Частичный вывод отказавшего
+	# curl не подменяет успешный PUT и не попадает в JSON как число HTTP.
+	code="$(curl -q -g -sS -m 120 --proto '=https' -o /dev/null -w '%{http_code}' \
+		-T "$local_path" -u "$login:$password" --url "$url")" || exit 1
+	yandex_transfer_settings_ok || exit 1
+	case "$code" in 200|201|204) printf '%s' "$code" ;; *) exit 1 ;; esac
+)
+
+upload_and_verify() (
+	[ "$#" -eq 2 ] && [ -n "$1" ] && [ -n "$2" ] || {
+		yandex_transfer_error usage; exit 1;
+	}
 	local_path="$1"
 	remote_path="$2"
-	url="$(webdav_url "$remote_path")" || return 1
-	curl -sS -m 120 -o /dev/null -w '%{http_code}' -T "$local_path" \
-		-u "$(uci_get login):$(uci_get password)" "$url"
-}
-
-upload_and_verify() {
-	local_path="$1"
-	remote_path="$2"
-	code verify_json
-
-	code="$(upload_file "$local_path" "$remote_path")"
-	case "$code" in
-		201|204|200) ;;
-		*)
-			printf '{"ok":false,"http":%s}\n' "$code"
-			return 1
-			;;
-	esac
-
-	verify_json="$(verify_upload "$local_path" "$remote_path" 2>/dev/null || true)"
-	case "$verify_json" in
-		*"\"ok\":true"*) printf '%s\n' "$verify_json"; return 0 ;;
-	esac
-
+	[ -f "$local_path" ] && [ ! -L "$local_path" ] || {
+		yandex_transfer_error local_missing; exit 1;
+	}
+	webdav_url "$remote_path" >/dev/null || { yandex_transfer_error path_not_allowed; exit 1; }
+	transferSettings="$(uci -q show sheepfold.cloud 2>/dev/null)" || {
+		yandex_transfer_error settings_unavailable; exit 1;
+	}
+	transferPinned=1
+	# Архив удаляется caller после успеха. Отправляем неизменяемую копию и
+	# не подтверждаем удаление, если источник изменился во время HTTP.
+	work="$(yandex_transfer_workdir)" || { yandex_transfer_error snapshot_failed; exit 1; }
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	umask 077
+	if ! cp "$local_path" "$work/source" || ! chmod 600 "$work/source" ||
+		! cmp -s "$local_path" "$work/source"; then
+		yandex_transfer_error snapshot_failed; exit 1
+	fi
+	yandex_file_bytes "$work/source" >/dev/null || { yandex_transfer_error snapshot_failed; exit 1; }
+	if ! upload_file "$work/source" "$remote_path" >/dev/null; then
+		yandex_transfer_error upload_failed; exit 1
+	fi
+	if verify_json="$(verify_upload "$work/source" "$remote_path")"; then
+		:
+	else
+		[ -n "$verify_json" ] || verify_json='{"ok":false,"error":"remote_metadata_unavailable"}'
+		printf '%s\n' "$verify_json"; exit 1
+	fi
+	if [ -L "$local_path" ] || [ ! -f "$local_path" ] || ! cmp -s "$local_path" "$work/source"; then
+		yandex_transfer_error source_changed; exit 1
+	fi
+	yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; exit 1; }
 	printf '%s\n' "$verify_json"
-	return 1
-}
+)
 
 # Имя до секунды остаётся внешним именем копии, но не определяет владельца
 # локального файла. Каждый архивный проход получает собственный RAM-каталог.
@@ -842,7 +945,7 @@ case "$command_name" in
 	download) cmd_download "$1" "$2" ;;
 	restore-config) cmd_restore_config "$1" ;;
 	sync-status) cmd_sync_status ;;
-	verify) verify_upload "$1" "$2" ;;
+	verify) verify_upload "${1:-}" "${2:-}" ;;
 	push-events) cmd_push_events ;;
 	archive-push) cmd_archive_push ;;
 	*)

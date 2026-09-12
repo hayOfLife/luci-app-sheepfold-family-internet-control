@@ -1,5 +1,17 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-12, **r318**, based on `6228e37` (r317).
+B116–B118 repair Yandex upload/verify launch, independent HEAD size confirmation,
+private upload snapshots and detected configuration changes during one transfer.
+See the [118-card register](bug-register.ru.md) and [r318 report](audit-fixes-r318.ru.md).
+The complete archive caller passes synthetic HTTP/UCI tests; real curl/TLS passes
+loopback checks. Real Yandex HEAD support remains unverified: missing or ambiguous
+Content-Length fails without authorizing source deletion. Size is not a checksum.
+The journal path/lock, full XML/quota/prune, push-events entry, list/download/restore,
+RAM bounds and cloud-wide concurrency remain open. No Android/policy/workflow changes.
+
+Historical continuations (not fresh evidence for this snapshot):
+
 Focused continuation: 2026-09-12, **r317**, based on `17eab4b` (r316).
 B114–B115 validate the Yandex local config/events preparation before cloud mutation
 and isolate every run in an owned private directory. Prior same-name snapshots
