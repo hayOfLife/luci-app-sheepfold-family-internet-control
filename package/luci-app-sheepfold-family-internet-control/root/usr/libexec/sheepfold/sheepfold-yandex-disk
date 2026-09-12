@@ -31,8 +31,19 @@ credentials_ready() {
 	[ -n "$login" ] && [ -n "$password" ]
 }
 
-normalize_root_folder() {
-	folder="$(uci_get root_folder '/sheepfold')"
+normalize_root_folder() (
+	# Отказ get не означает отсутствия настройки и не разрешает выбрать другое
+	# облачное назначение. Сверка замечает изменение между чтениями, не заменяя
+	# общую транзакцию UCI. Subshell не меняет переменные вызывающего обработчика.
+	snapshot="$(uci -q show sheepfold.cloud 2>/dev/null)" || return 1
+	if ! folder="$(uci -q get sheepfold.cloud.root_folder 2>/dev/null)"; then
+		case "
+$snapshot" in *'
+sheepfold.cloud.root_folder='*) return 1 ;; esac
+		folder='/sheepfold'
+	fi
+	current="$(uci -q show sheepfold.cloud 2>/dev/null)" || return 1
+	[ "$current" = "$snapshot" ] || return 1
 	case "$folder" in
 		/*) ;;
 		*) folder="/$folder" ;;
@@ -40,7 +51,7 @@ normalize_root_folder() {
 	folder="${folder%/}"
 	[ -n "$folder" ] || folder="/sheepfold"
 	printf '%s' "$folder"
-}
+)
 
 quota_mb() {
 	quota="$(uci_get quota_mb '500')"
@@ -102,27 +113,41 @@ require_tooling() {
 	return 0
 }
 
-ensure_webdav_path() {
+ensure_webdav_path() (
+	[ "$#" -eq 1 ] && [ -n "$1" ] || return 1
 	target="$1"
+	credentials_ready || return 1
 	current=""
-	IFS='/'
-	# shellcheck disable=SC2086
-	set -- $(printf '%s' "$target" | sed 's#^/##')
-	for part in "$@"; do
+	remaining="${target#/}"
+	# Не применяем set -- $(...) и IFS='/': имя папки не является файловой
+	# маской на роутере. Subshell сохраняет IFS, аргументы и переменные caller.
+	while [ -n "$remaining" ]; do
+		part="${remaining%%/*}"
+		if [ "$part" = "$remaining" ]; then
+			remaining=""
+		else
+			remaining="${remaining#*/}"
+		fi
 		[ -n "$part" ] || continue
 		current="${current}/${part}"
-		code="$(curl -sS -m 30 -o /dev/null -w '%{http_code}' -u "$(uci_get login):$(uci_get password)" \
-			-X MKCOL "$(webdav_url "$current")" 2>/dev/null || printf 000)"
+		url="$(webdav_url "$current")" || return 1
+		# Проверяем exit отдельно от stdout. Не следуем redirect и не читаем
+		# curlrc; MKCOL получает ровно один явный URL с сохранённым TLS.
+		code="$(curl -q -g -sS -m 30 --proto '=https' -o /dev/null -w '%{http_code}' \
+			-u "$login:$password" -X MKCOL --url "$url")" || return 1
 		case "$code" in
-			201|200|204|301|302|405|409|423) ;;
+			201) ;;
+			# Сохраняем повтор для уже существующего URI. Сам по себе 405 не
+			# доказывает тип collection: полная проверка DAV XML остаётся R15.
+			405) ;;
 			*) return 1 ;;
 		esac
 	done
-}
+)
 
 remote_path_allowed() {
 	path="$1"
-	root="$(normalize_root_folder)"
+	root="$(normalize_root_folder)" || return 1
 	prefix_logs="${root}/logs/"
 	prefix_backups="${root}/backups/"
 
@@ -139,7 +164,7 @@ remote_path_allowed() {
 
 resolve_remote_path() {
 	spec="$1"
-	root="$(normalize_root_folder)"
+	root="$(normalize_root_folder)" || return 1
 	case "$spec" in
 		/*)
 			remote_path="$spec"
@@ -364,7 +389,7 @@ cmd_list() {
 	root logs_json backups_json
 
 	require_tooling || return 1
-	root="$(normalize_root_folder)"
+	root="$(normalize_root_folder)" || return 1
 	logs_json="$(propfind_folder_json_array "${root}/logs" 2>/dev/null || true)"
 	backups_json="$(propfind_folder_json_array "${root}/backups" 2>/dev/null || true)"
 	[ -n "$logs_json" ] || logs_json=""
@@ -423,7 +448,7 @@ cmd_restore_config() {
 	root remote_spec remote_path local_archive safety_backup restore_dir tar_extract_flags=""
 
 	require_tooling || return 1
-	root="$(normalize_root_folder)"
+	root="$(normalize_root_folder)" || return 1
 	mkdir -p "$BACKUP_STAGING" 2>/dev/null || true
 
 	if [ -n "$requested" ]; then
@@ -535,7 +560,11 @@ cmd_status() {
 			;;
 	esac
 
-	root="$(normalize_root_folder)"
+	root="$(normalize_root_folder)" || {
+		printf '{"backend":"%s","state":"error","message":"Could not read storage status.","authorized":%s,"used_mb":0,"quota_mb":%s,"free_pct":0}\n' \
+			"$backend" "$authorized" "$quota"
+		return 0
+	}
 	if ! used_bytes="$(folder_used_bytes "$root" 2>/dev/null)"; then
 		printf '{"backend":"%s","state":"error","message":"Could not read storage status.","authorized":%s,"used_mb":0,"quota_mb":%s,"free_pct":0}\n' \
 			"$backend" "$authorized" "$quota"
@@ -590,9 +619,18 @@ cmd_push_events() {
 	[ -f "$EVENTS_LOG" ] || return 0
 	require_tooling || return 1
 
-	root="$(normalize_root_folder)"
-	ensure_webdav_path "$root" || return 1
-	ensure_webdav_path "$root/logs" || return 1
+	root="$(normalize_root_folder)" || {
+		printf '{"ok":false,"error":"root_unavailable"}\n'
+		return 1
+	}
+	ensure_webdav_path "$root" || {
+		printf '{"ok":false,"error":"remote_prepare_failed"}\n'
+		return 1
+	}
+	ensure_webdav_path "$root/logs" || {
+		printf '{"ok":false,"error":"remote_prepare_failed"}\n'
+		return 1
+	}
 
 	remote_path="${root}/logs/events.log"
 	verify_json="$(upload_and_verify "$EVENTS_LOG" "$remote_path")" || {
@@ -612,11 +650,23 @@ cmd_archive_push() {
 	# сейчас, а не полагается на исторический флаг и не сохраняет чужой UCI.
 	probeResult="$(cmd_test)" || { printf '%s\n' "$probeResult"; return 1; }
 
-	root="$(normalize_root_folder)"
+	root="$(normalize_root_folder)" || {
+		printf '{"ok":false,"error":"root_unavailable"}\n'
+		return 1
+	}
 	quota_bytes=$(( $(quota_mb) * 1024 * 1024 ))
-	ensure_webdav_path "$root" || return 1
-	ensure_webdav_path "$root/logs" || return 1
-	ensure_webdav_path "$root/backups" || return 1
+	ensure_webdav_path "$root" || {
+		printf '{"ok":false,"error":"remote_prepare_failed"}\n'
+		return 1
+	}
+	ensure_webdav_path "$root/logs" || {
+		printf '{"ok":false,"error":"remote_prepare_failed"}\n'
+		return 1
+	}
+	ensure_webdav_path "$root/backups" || {
+		printf '{"ok":false,"error":"remote_prepare_failed"}\n'
+		return 1
+	}
 
 	pushed=0
 	errors=0

@@ -1,5 +1,17 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-12, **r315**, based on `de179d3` (r314).
+B109–B111 repair Yandex MKCOL path splitting/caller isolation, reject unconfirmed
+preparation and preserve configured root intent after UCI failures. See the
+[111-card register](bug-register.ru.md) and [r315 report](audit-fixes-r315.ru.md).
+192 focused tests; no native WebDAV/UCI or full backup/restore claim. Existing-URI
+405 remains a compatibility path, not collection-type verification. Two late
+push-events preflight tests repair its known entry typo only in their fixture;
+the actual entry and upload chain are not declared fixed. Android, policies,
+workflows and runner code remain unchanged.
+
+Historical continuations (their results do not certify the current snapshot):
+
 Focused continuation: 2026-09-11, **r313**, based on `bf8e075` (r312).
 B104–B105 align Google Drive journal exports with `log_cache_path` and capture a
 checked local snapshot under the existing writer/API/rotation lock. The lock is
