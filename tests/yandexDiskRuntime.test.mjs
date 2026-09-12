@@ -124,6 +124,16 @@ writeout=values.get('-w',values.get('--write-out',''))
 print(writeout.replace('%{http_code}',http).replace('\\\\n','\\n'),end='')
 sys.exit(exit_code)
 `);
+  if (opts.failUrlEncoder) put('awk', `#!/bin/sh
+case "$*" in
+  *'codes[sprintf'*)
+    printf '%s\\n' '{"kind":"encoderFault"}' >> "$YANDEX_TRACE"
+    cat >/dev/null
+    printf '/partial-result'
+    exit 8 ;;
+esac
+exec /usr/bin/awk "$@"
+`);
   const env = { ...process.env, YANDEX_OPTIONS: options, YANDEX_STATE: state, YANDEX_TRACE: trace, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
   const results = [];
   const capture = (action, result) => { results.push({ action, status:result.status, stdout:result.stdout, stderr:result.stderr, error:result.error?.message }); return result; };
@@ -249,7 +259,7 @@ describe('Yandex collection preparation without local shell expansion', () => {
     const f = fixture(t, { mkcolHttp: 201, localNames: ['a', 'b'] });
     const result = f.helper("ensure_webdav_path '/family/[ab]/logs'");
     assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(curls(f).map((e) => e.urls), [
+    assert.deepEqual(curls(f).map((e) => e.urls.map(decodeURIComponent)), [
       ['https://webdav.yandex.ru/family'],
       ['https://webdav.yandex.ru/family/[ab]'],
       ['https://webdav.yandex.ru/family/[ab]/logs'],
@@ -259,7 +269,7 @@ describe('Yandex collection preparation without local shell expansion', () => {
     const f = fixture(t, { mkcolHttp: 201, localNames: ['alpha', 'beta'] });
     const result = f.helper("ensure_webdav_path '/family/*'");
     assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(curls(f).map((e) => e.urls[0]), [
+    assert.deepEqual(curls(f).map((e) => decodeURIComponent(e.urls[0])), [
       'https://webdav.yandex.ru/family', 'https://webdav.yandex.ru/family/*',
     ]);
   });
@@ -279,11 +289,11 @@ describe('Yandex collection preparation without local shell expansion', () => {
     ]);
   });
   it('retains nested component order without splitting spaces or backslashes', (t) => {
-    // Здесь проверяется argv, не percent-encoding или поддержка имени сервером.
+    // Здесь проверяется разбиение пути: percent-encoding проверен отдельно в r316.
     const f = fixture(t, { mkcolHttp: 201 });
     const result = f.helper("ensure_webdav_path '/parent//a b\\c/logs/'");
     assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(curls(f).map((e) => e.urls[0]), [
+    assert.deepEqual(curls(f).map((e) => decodeURIComponent(e.urls[0])), [
       'https://webdav.yandex.ru/parent', 'https://webdav.yandex.ru/parent/a b\\c',
       'https://webdav.yandex.ru/parent/a b\\c/logs',
     ]);
@@ -401,5 +411,152 @@ describe('Yandex root selection is not replaced after failed UCI reads', () => {
     const f = fixture(t, { failGet: 'sheepfold.cloud.root_folder', saved: { 'sheepfold.cloud.root_folder': '/chosen-root' } });
     const result = f.helper("if output=$(resolve_remote_path 'backups/test.tar'); then printf 'unexpected:%s' \"$output\"; exit 2; fi");
     assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout, ''); assert.equal(curls(f).length, 0);
+  });
+});
+
+
+// r316: logical path -> URI, до любого запроса. Облачные ответы остаются моделью.
+const uriPath = (value) => value.split('/').map((part) => encodeURIComponent(part)
+  .replace(/[!'()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`)).join('/');
+const yandexBase = 'https://webdav.yandex.ru';
+
+describe('Yandex logical paths are encoded once as URI paths', () => {
+  for (const logical of [
+    '/family#2026/logs', '/family?view=1/logs', '/a b/logs', '/Семья/журнал 🧡.log',
+    '/literal%2F/literal%20.txt', '/100%/file.tar', '/[ab]/{one,two}/*',
+    "/quotes'\"/plus+amp&eq=;@colon:.txt", '/back\\slash/logs', '/a~b/name-1_2.3.tar',
+  ]) it(`encodes the exact bytes of ${JSON.stringify(logical)} without adding query or fragment`, (t) => {
+    const f = fixture(t); const result = f.helper(`webdav_url ${quote(logical)}`);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, yandexBase + uriPath(logical));
+    const parsed = new URL(result.stdout);
+    assert.equal(parsed.origin, yandexBase); assert.equal(parsed.search, ''); assert.equal(parsed.hash, '');
+    assert.equal(decodeURIComponent(parsed.pathname), logical);
+    assert.equal(curls(f).length, 0);
+  });
+  it('keeps the caller IFS variables and positional arguments intact', (t) => {
+    const f = fixture(t); const result = f.helper(`
+      path=callerPath; encoded=callerEncoded; IFS='|'; set -- first second
+      webdav_url '/space #?%/logs'; printf '\n'; printf '%s\n' "$path" "$encoded" "$IFS" "$#" "$1" "$2"
+    `);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.stdout.trimEnd().split('\n'), [
+      yandexBase + '/space%20%23%3F%25/logs', 'callerPath', 'callerEncoded', '|', '2', 'first', 'second',
+    ]);
+  });
+  for (const root of ['/family#2026', '/a b', '/Семья', '/literal%2F', '/question?x=y']) {
+    it(`sends successive MKCOLs for literal components of ${JSON.stringify(root)}`, (t) => {
+      const f = fixture(t, { mkcolHttp: 201 }); const result = f.helper(`ensure_webdav_path ${quote(root + '/logs')}`);
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(curls(f).map((e) => e.urls), [[yandexBase + uriPath(root)], [yandexBase + uriPath(root + '/logs')]]);
+      assert.ok(curls(f).every((e) => e.method === 'MKCOL'));
+    });
+  }
+  for (const [name, command] of [
+    ['folder usage', "folder_used_bytes '/family#2026/logs'"],
+    ['file metadata', "remote_file_bytes '/family#2026/logs/file%20.txt'"],
+    ['list reader', "propfind_folder_json_array '/family#2026/logs'"],
+  ]) it(`uses the same URI boundary in ${name} without claiming XML correctness`, (t) => {
+    const f = fixture(t); const result = f.helper(command);
+    assert.equal(result.status, 0, result.stderr); assert.equal(curls(f).length, 1);
+    const url = curls(f)[0].urls[0];
+    assert.equal(new URL(url).hash, ''); assert.ok(url.includes('family%232026'));
+    if (name === 'file metadata') assert.ok(url.endsWith('file%2520.txt'));
+  });
+  it('retains the configured root in UCI while sending its encoded path during status', (t) => {
+    const f = fixture(t, { saved: { 'sheepfold.cloud.root_folder': '/Family #2026' } });
+    const before = f.readState(); const result = f.run(['status']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(f.readState(), before);
+    assert.deepEqual(curls(f).map((e) => e.urls[0]), [yandexBase + '/', yandexBase + '/Family%20%232026']);
+  });
+  it('does not decode a literal percent path into traversal in root normalization', (t) => {
+    const root = '/family/%2e%2e/literal%2Fname';
+    const f = fixture(t, { saved: { 'sheepfold.cloud.root_folder': root } });
+    const result = f.helper('normalize_root_folder');
+    assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout, root);
+    const url = f.helper(`webdav_url ${quote(root)}`);
+    assert.equal(url.status, 0, url.stderr); assert.equal(url.stdout, yandexBase + uriPath(root));
+  });
+});
+
+describe('Yandex invalid destinations stop before changing cloud folders', () => {
+  for (const path of ['/family/../outside', '/family/./logs', '../outside', '/family/..', '/family/.',
+    '/family//../logs', '/family\nother/logs', '/family\rother/logs', '/family\tother/logs', '/family\x7f/logs']) {
+    it(`rejects ${JSON.stringify(path)} before the first MKCOL`, (t) => {
+      const f = fixture(t, { mkcolHttp: 201 }); const result = f.helper(`ensure_webdav_path ${quote(path)}`);
+      assert.notEqual(result.status, 0); assert.equal(result.stdout, ''); assert.equal(curls(f).length, 0);
+    });
+  }
+  for (const helper of ['folder_used_bytes', 'remote_file_bytes', 'propfind_folder_json_array']) {
+    it(`does not pass an invalid path as an empty URL to ${helper}`, (t) => {
+      const f = fixture(t); const result = f.helper(`${helper} '/family/../outside'`);
+      assert.notEqual(result.status, 0); assert.equal(result.stdout, ''); assert.equal(curls(f).length, 0);
+    });
+  }
+  it('stops archive preflight for a dotted root and preserves local archives and UCI', (t) => {
+    const f = fixture(t, { saved: { 'sheepfold.cloud.root_folder': '/family/../outside' }, mkcolHttp: 423, events: 'keep\n' });
+    const before = f.readState(); const result = f.run(['archive-push']);
+    assert.notEqual(result.status, 0); assert.equal(parse(result).error, 'root_unavailable');
+    assert.deepEqual(curls(f).map((e) => e.method), ['PROPFIND']);
+    assert.deepEqual(f.readState(), before);
+    assert.equal(readFileSync(f.archive, 'utf8'), 'synthetic archive to preserve');
+    assert.equal(readFileSync(join(f.ram, 'events.log'), 'utf8'), 'keep\n');
+    assert.ok(!existsSync(join(f.ram, '.yandex-backup-staging')));
+  });
+  it('does not query the substituted destination during status for a dotted root', (t) => {
+    const f = fixture(t, { saved: { 'sheepfold.cloud.root_folder': '/family/../outside' } });
+    const result = f.run(['status']); assert.equal(result.status, 0, result.stderr);
+    assert.equal(parse(result).state, 'error'); assert.equal(parse(result).free_pct, 0);
+    assert.deepEqual(curls(f).map((e) => e.urls[0]), [yandexBase + '/']);
+  });
+  it('rejects a dot component accepted by the legacy file-prefix gate', (t) => {
+    const f = fixture(t); const result = f.helper("remote_path_allowed '/sheepfold/logs/./file.tar'");
+    assert.notEqual(result.status, 0); assert.equal(result.stdout, ''); assert.equal(curls(f).length, 0);
+  });
+  for (const helper of ['ensure_webdav_path', 'folder_used_bytes', 'remote_file_bytes', 'propfind_folder_json_array']) {
+    it(`discards partial encoder output before ${helper}`, (t) => {
+      const f = fixture(t, { failUrlEncoder: true, mkcolHttp: 201 });
+      const result = f.helper(`${helper} '/family/logs'`);
+      assert.ok(f.events().some((e) => e.kind === 'encoderFault'), 'the injected encoder failure was reached');
+      assert.notEqual(result.status, 0); assert.equal(result.stdout, ''); assert.equal(curls(f).length, 0);
+    });
+  }
+  it('does not reject ordinary dot-prefixed names or doubled dots inside a name', (t) => {
+    const f = fixture(t, { mkcolHttp: 201 }); const result = f.helper("ensure_webdav_path '/.family/v1..2/logs'");
+    assert.equal(result.status, 0, result.stderr); assert.equal(curls(f).length, 3);
+    assert.equal(curls(f)[2].urls[0], yandexBase + '/.family/v1..2/logs');
+  });
+});
+
+describe('Yandex URI failure propagation in file consumers', () => {
+  it('encodes a local archive basename without treating it as a URI fragment', (t) => {
+    const f = fixture(t);
+    const local = shellTestPath(f.archive, { cwd: repo, allowedRoot: f.ram });
+    const result = f.helper(`upload_file ${quote(local)} '/sheepfold/logs/log#1%20.tar'`);
+    assert.equal(result.status, 0, result.stderr); assert.equal(curls(f).length, 1);
+    assert.equal(curls(f)[0].method, 'PUT');
+    assert.deepEqual(curls(f)[0].urls, [yandexBase + '/sheepfold/logs/log%231%2520.tar']);
+    assert.equal(curls(f)[0].uploadHex, Buffer.from('synthetic archive to preserve').toString('hex'));
+    // Вызван только низкоуровневый PUT helper: verify/полный upload не подтверждены.
+  });
+  it('does not send PUT after rejecting a dotted path', (t) => {
+    const f = fixture(t);
+    const local = shellTestPath(f.archive, { cwd: repo, allowedRoot: f.ram });
+    const result = f.helper(`upload_file ${quote(local)} '/sheepfold/logs/../file.tar'`);
+    assert.notEqual(result.status, 0); assert.equal(result.stdout, ''); assert.equal(curls(f).length, 0);
+    assert.equal(readFileSync(f.archive, 'utf8'), 'synthetic archive to preserve');
+  });
+  it('does not issue DELETE by interpreting an encoded href as a literal percent filename', (t) => {
+    const f = fixture(t, { body: '<legacy href="/sheepfold/logs/log%20copy.tar" />\n' });
+    const result = f.helper(`folder_used_bytes() { printf '2'; }; prune_remote_logs '/sheepfold' 1`);
+    assert.notEqual(result.status, 0);
+    assert.deepEqual(curls(f).map((e) => e.method), ['PROPFIND']);
+    // Только защита границы старого reader: подставленный usage и форма href не
+    // доказывают корректный WebDAV XML, общий prune либо правильность квоты.
+  });
+  for (const value of ['', '/family/logs\n']) it(`does not publish partial URL for ${JSON.stringify(value)}`, (t) => {
+    const f = fixture(t); const result = f.helper(`webdav_url ${quote(value)}`);
+    assert.notEqual(result.status, 0); assert.equal(result.stdout, ''); assert.equal(curls(f).length, 0);
   });
 });

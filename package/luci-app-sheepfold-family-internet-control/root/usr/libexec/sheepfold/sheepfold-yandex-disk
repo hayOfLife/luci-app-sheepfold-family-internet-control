@@ -50,6 +50,7 @@ sheepfold.cloud.root_folder='*) return 1 ;; esac
 	esac
 	folder="${folder%/}"
 	[ -n "$folder" ] || folder="/sheepfold"
+	webdav_url "$folder" >/dev/null || return 1
 	printf '%s' "$folder"
 )
 
@@ -61,14 +62,36 @@ quota_mb() {
 	esac
 }
 
-webdav_url() {
+# Вход — логический путь из настройки/имени файла, а не уже готовый URI.
+# Кодируем байты ровно один раз: «%2F» в имени означает буквальное %2F, не «/».
+webdav_url() (
+	[ "$#" -eq 1 ] && [ -n "$1" ] || return 1
 	path="$1"
-	case "$path" in
-		/*) ;;
-		*) path="/$path" ;;
-	esac
-	printf '%s%s' "$WEBDAV_BASE" "$path"
-}
+	case "$path" in /*) ;; *) path="/$path" ;; esac
+	# -g отключает только globbing curl, но не query/fragment, пробелы и «..».
+	# Отбрасываем весь вывод отказавшего encoder до возврата URL вызывающему.
+	encoded="$(printf '%s\n' "$path" | LC_ALL=C awk '
+		BEGIN { for (i = 1; i < 256; i++) codes[sprintf("%c", i)] = i }
+		NR != 1 || /[[:cntrl:]]/ { exit 1 }
+		{
+			count = split($0, parts, "/")
+			for (i = 1; i <= count; i++)
+				if (parts[i] == "." || parts[i] == "..") exit 1
+			result = ""
+			for (i = 1; i <= length($0); i++) {
+				ch = substr($0, i, 1)
+				if (ch ~ /^[A-Za-z0-9_~.\/-]$/) result = result ch
+				else {
+					if (!(ch in codes)) exit 1
+					result = result sprintf("%%%02X", codes[ch])
+				}
+			}
+			printf "%s", result
+		}
+	')" || return 1
+	[ -n "$encoded" ] || return 1
+	printf '%s%s' "$WEBDAV_BASE" "$encoded"
+)
 
 # Узкий транспорт PROPFIND. Возвращает тело только после успешного curl/207.
 # XML-поля и полноту коллекции обязан проверять вызывающий reader отдельно.
@@ -116,6 +139,8 @@ require_tooling() {
 ensure_webdav_path() (
 	[ "$#" -eq 1 ] && [ -n "$1" ] || return 1
 	target="$1"
+	# Проверяем весь путь до первого MKCOL, а не после создания его предков.
+	webdav_url "$target" >/dev/null || return 1
 	credentials_ready || return 1
 	current=""
 	remaining="${target#/}"
@@ -147,6 +172,7 @@ ensure_webdav_path() (
 
 remote_path_allowed() {
 	path="$1"
+	webdav_url "$path" >/dev/null || return 1
 	root="$(normalize_root_folder)" || return 1
 	prefix_logs="${root}/logs/"
 	prefix_backups="${root}/backups/"
@@ -188,8 +214,10 @@ resolve_remote_path() {
 }
 
 folder_used_bytes() {
+	local url
 	root="$1"
-	response="$(webdav_request PROPFIND "$(webdav_url "$root")" 1)" || return 1
+	url="$(webdav_url "$root")" || return 1
+	response="$(webdav_request PROPFIND "$url" 1)" || return 1
 	printf '%s' "$response" | awk '
 		BEGIN { total = 0 }
 		/<[^>]*getcontentlength[^>]*>[0-9]+/ {
@@ -203,8 +231,10 @@ folder_used_bytes() {
 }
 
 remote_file_bytes() {
+	local url
 	remote_path="$1"
-	response="$(webdav_request PROPFIND "$(webdav_url "$remote_path")" 0)" || return 1
+	url="$(webdav_url "$remote_path")" || return 1
+	response="$(webdav_request PROPFIND "$url" 0)" || return 1
 	printf '%s' "$response" | sed -n 's/.*getcontentlength>\([0-9]*\).*/\1/p' | head -1
 }
 
@@ -259,10 +289,12 @@ verify_upload() {
 }
 
 upload_file() {
+	local url
 	local_path="$1"
 	remote_path="$2"
+	url="$(webdav_url "$remote_path")" || return 1
 	curl -sS -m 120 -o /dev/null -w '%{http_code}' -T "$local_path" \
-		-u "$(uci_get login):$(uci_get password)" "$(webdav_url "$remote_path")"
+		-u "$(uci_get login):$(uci_get password)" "$url"
 }
 
 upload_and_verify() {
@@ -301,8 +333,10 @@ create_config_backup() {
 }
 
 propfind_folder_json_array() {
+	local url
 	folder="$1"
-	response="$(webdav_request PROPFIND "$(webdav_url "$folder")" 1)" || return 1
+	url="$(webdav_url "$folder")" || return 1
+	response="$(webdav_request PROPFIND "$url" 1)" || return 1
 	printf '%s' "$response" | awk -v folder="$folder" '
 		function json_escape(value,    chars) {
 			gsub(/\\/, "\\\\", value)
@@ -399,6 +433,7 @@ cmd_list() {
 }
 
 cmd_download() {
+	local url
 	remote_spec="$1"
 	local_path="$2"
 	remote_path code
@@ -410,6 +445,7 @@ cmd_download() {
 	}
 
 	remote_path="$(resolve_remote_path "$remote_spec")" || return 1
+	url="$(webdav_url "$remote_path")" || return 1
 	case "$local_path" in
 		/tmp/*) ;;
 		*)
@@ -420,7 +456,7 @@ cmd_download() {
 
 	mkdir -p "${local_path%/*}" 2>/dev/null || true
 	code="$(curl -sS -m 120 -o "$local_path" -w '%{http_code}' -u "$(uci_get login):$(uci_get password)" \
-		"$(webdav_url "$remote_path")" 2>/dev/null || printf 000)"
+		"$url" 2>/dev/null || printf 000)"
 	case "$code" in
 		200|201|204)
 			printf '{"ok":true,"remote":"%s","local":"%s","bytes":%s}\n' \
@@ -597,16 +633,22 @@ cmd_status() {
 }
 
 prune_remote_logs() {
+	local url
 	root="$1"
 	quota_bytes="$2"
 	used_bytes="$(folder_used_bytes "$root" 2>/dev/null || printf 0)"
 	[ "$used_bytes" -le "$quota_bytes" ] && return 0
 
-	response="$(webdav_request PROPFIND "$(webdav_url "$root/logs")" 1)" || return 0
+	url="$(webdav_url "$root/logs")" || return 1
+	response="$(webdav_request PROPFIND "$url" 1)" || return 0
 	printf '%s' "$response" | sed -n 's/.*href="\([^"]*\)".*/\1/p' | grep "${root}/logs/" | grep -v '/$' | sort | while IFS= read -r href; do
 		[ -n "$href" ] || continue
+		# Старый reader не декодирует DAV href. Не удаляем другой файл после
+		# двойного кодирования URI; полный проверяемый XML-reader остаётся R15.
+		case "$href" in *%*) return 1 ;; esac
+		url="$(webdav_url "$href")" || return 1
 		curl -sS -m 30 -o /dev/null -u "$(uci_get login):$(uci_get password)" \
-			-X DELETE "$(webdav_url "$href")" >/dev/null 2>&1 || true
+			-X DELETE "$url" >/dev/null 2>&1 || true
 		used_bytes="$(folder_used_bytes "$root" 2>/dev/null || printf 0)"
 		[ "$used_bytes" -le "$quota_bytes" ] && break
 	done

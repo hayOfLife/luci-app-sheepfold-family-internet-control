@@ -198,6 +198,10 @@
   меняет назначение. Не объявлять 409/423 успешным MKCOL; 405 не доказывает collection.
   Ошибка root UCI не равна отсутствующей опции. Проверки поздней ветви push-events
   с исправленным только тестовым объявлением не подтверждают весь рабочий entry.
+- r316: кавычки shell и `-g` не делают имя безопасным URI. `webdav_url` принимает
+  логический путь, кодирует `%` ровно один раз и отказывает при отдельных `.`/`..`
+  до MKCOL. Не передавать этому builder сырой href из XML как имя. Проверять
+  результат assignment отдельно; полный XML/prune/upload/restore остаётся R15.
 - Debounce выгрузки живых событий: **300 с** (`YANDEX_PUSH_INTERVAL` в `sheepfold-log`).
 - Восстановление конфига с диска — `yandex-disk-restore-config`; в UI есть выбор бэкапа и confirm; safety backup в `/tmp/sheepfold/`.
 - Подробности: [`docs/yandex-disk-storage.ru.md`](yandex-disk-storage.ru.md).

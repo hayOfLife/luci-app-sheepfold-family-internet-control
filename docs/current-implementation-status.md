@@ -348,6 +348,14 @@ normal release (§prodvar, §owrtci1). The remote workflow and one official
 OpenWrt 25.12 live-router round-trip have passed; OpenWrt 24.10 still needs an
 equivalent live-router install/runtime pass before a public stable release.
 
+## Локальные исправления r316
+
+Поверх r315 (`da347f1`) общий builder Яндекс Диска кодирует логические пути и
+отказывает при dot-segments до MKCOL. Проверены точные URI и реальные loopback
+HTTPS request-target, без аккаунта Яндекса. [B112–B113](bug-register.ru.md) и
+[протокол r316](audit-fixes-r316.ru.md) отделяют это от непроверенных XML,
+upload/download/restore и native OpenWrt. Доработки принятого CI и D01 сохранены.
+
 ## Working In The Current Package
 
 - LuCI entry point for `Sheepfold Family Internet Control`.
