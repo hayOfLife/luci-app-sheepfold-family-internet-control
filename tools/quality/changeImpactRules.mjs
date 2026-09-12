@@ -104,7 +104,7 @@ export const impactRules = Object.freeze([
     categories: ['backend', 'security', 'packaging'],
     checks: ['routerReadOnly'],
     risk: 'high',
-    directTests: Object.freeze(['yandexDiskRuntime.test.mjs', 'yandexBackupRuntime.test.mjs', 'yandexUploadRuntime.test.mjs', 'logStorage.test.mjs', 'logWriterRuntime.test.mjs', 'portableShellAndStatus.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']),
+    directTests: Object.freeze(['yandexDiskRuntime.test.mjs', 'yandexBackupRuntime.test.mjs', 'yandexUploadRuntime.test.mjs', 'yandexEventsRuntime.test.mjs', 'logStorage.test.mjs', 'logWriterRuntime.test.mjs', 'portableShellAndStatus.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']),
     review: 'PROPFIND/MKCOL: явный URL, проверяемый HTTP/exit и сохранённый TLS. Разбор пути не раскрывает маски локальных файлов и не меняет IFS caller. Сбой root UCI не выбирает другое назначение. Status не сохраняет UCI; XML/restore, тип ресурса при 405 и реальное облако требуют отдельной проверки.',
   }),
   Object.freeze({
@@ -124,8 +124,8 @@ export const impactRules = Object.freeze([
     categories: ['backend', 'security', 'packaging'],
     checks: ['routerReadOnly'],
     risk: 'high',
-    directTests: Object.freeze(['legacyLogRuntime.test.mjs', 'logWriterRuntime.test.mjs', 'maintenanceJobs.test.mjs', 'maintenanceRotationRuntime.test.mjs', 'googleDriveUploadRuntime.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']),
-    review: 'Проверить writer, API, ротацию и Google Drive snapshot как потребителей RAM-пути; права/lock, отказы UCI и наличие общей библиотеки в обеих редакциях. HTTP-модель не доказывает облачную доставку.',
+    directTests: Object.freeze(['legacyLogRuntime.test.mjs', 'logWriterRuntime.test.mjs', 'maintenanceJobs.test.mjs', 'maintenanceRotationRuntime.test.mjs', 'googleDriveUploadRuntime.test.mjs', 'yandexEventsRuntime.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']),
+    review: 'Проверить writer, API, ротацию, Google Drive и Yandex snapshots как потребителей RAM-пути; права/lock, отказы UCI и наличие общей библиотеки в обеих редакциях. HTTP-модель не доказывает облачную доставку.',
   }),
 
   Object.freeze({

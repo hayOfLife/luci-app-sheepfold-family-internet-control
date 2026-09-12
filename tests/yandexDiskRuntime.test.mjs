@@ -48,19 +48,17 @@ function fixture(t, opts = {}) {
   writeFileSync(state, JSON.stringify(initialState));
   writeFileSync(trace, '');
   let original = readFileSync(join(process.env.SHEEPFOLD_YANDEX_TEST_SOURCE || runtime, 'sheepfold-yandex-disk'), 'utf8');
-  // В двух тестах проверяется только отказ preflight после минимального снятия
-  // известного раннего typo. Production entry не исправляется и полноценная
-  // работа push-events этим не объявляется. То же преобразование у baseline.
   const inputDigest = createHash('sha256').update(original).digest('hex');
-  const entryAdjustment = opts.openPushPreflight ? 'local-only push-events entry' : null;
-  if (entryAdjustment) {
-    assert.ok(original.includes('cmd_push_events() {\n\tremote_path verify_json'));
-    original = original.replace('cmd_push_events() {\n\tremote_path verify_json',
-      'cmd_push_events() {\n\tlocal remote_path verify_json');
-  }
   const source = original.replaceAll('/tmp/sheepfold', path(ram))
-    .replaceAll('/etc/config', path(config)).replaceAll('/etc/init.d/sheepfold', path(join(root, 'no-service')));
+    .replaceAll('/etc/config', path(config)).replaceAll('/usr/libexec/sheepfold/', path(bin) + '/').replaceAll('/etc/init.d/sheepfold', path(join(root, 'no-service')));
   put('sheepfold-yandex-disk', source);
+  // На Windows эта модель только пропускает lock; его конкурентность проверяет Linux-suite.
+  if (process.platform === 'win32') put('flock', '#!/bin/sh\nexit 0\n');
+  // Экспортёр загружает настоящие общие readers/lock; пути остаются в fixture.
+  for (const name of ['sheepfold-log-common', 'sheepfold-lock-common']) {
+    put(name, readFileSync(join(runtime, name), 'utf8').replaceAll('/tmp/sheepfold', path(ram)));
+  }
+
   const marker = '\ncommand_name="${1:-}"';
   assert.ok(source.lastIndexOf(marker) > 0, 'production dispatcher boundary');
   put('library.sh', source.slice(0, source.lastIndexOf(marker)) + '\n');
@@ -154,7 +152,7 @@ exec /usr/bin/awk "$@"
     if (evidence) {
       mkdirSync(evidence,{ recursive:true });
       const name = createHash('sha256').update(t.name).digest('hex').slice(0,16);
-      writeFileSync(join(evidence, name+'.json'), JSON.stringify({ scenario:t.name, inputDigest, entryAdjustment, events:events(), results, state:readState(), archiveHex:existsSync(archive) ? readFileSync(archive).toString('hex') : null, journalHex:existsSync(join(ram, 'events.log')) ? readFileSync(join(ram, 'events.log')).toString('hex') : null, stagingExists:existsSync(join(ram, '.yandex-backup-staging')) },null,2)+'\n');
+      writeFileSync(join(evidence, name+'.json'), JSON.stringify({ scenario:t.name, inputDigest, events:events(), results, state:readState(), archiveHex:existsSync(archive) ? readFileSync(archive).toString('hex') : null, journalHex:existsSync(join(ram, 'events.log')) ? readFileSync(join(ram, 'events.log')).toString('hex') : null, stagingExists:existsSync(join(ram, '.yandex-backup-staging')) },null,2)+'\n');
     }
     rmSync(root,{recursive:true,force:true});
   });
@@ -355,8 +353,8 @@ describe('Yandex MKCOL outcome and request boundaries', () => {
     assert.notEqual(result.status, 0); assert.equal(curls(f).length, 0);
     assert.ok(f.events().some((e) => e.kind === 'uci' && e.args[1] === `sheepfold.cloud.${key}`));
   });
-  for (const command of ['archive-push', 'push-events']) it(`returns a structured ${command} preflight failure${command === 'push-events' ? ' after the entry typo only is repaired' : ''} without altering local data`, (t) => {
-    const f = fixture(t, { mkcolHttp: 423, events: 'live journal\n', openPushPreflight: command === 'push-events' }); const before = f.readState();
+  for (const command of ['archive-push', 'push-events']) it(`returns a structured ${command} preflight failure without altering local data`, (t) => {
+    const f = fixture(t, { mkcolHttp: 423, events: 'live journal\n' }); const before = f.readState();
     const result = f.run([command]);
     assert.notEqual(result.status, 0); assert.equal(parse(result).error, 'remote_prepare_failed');
     assert.deepEqual(f.readState(), before);
@@ -399,8 +397,8 @@ describe('Yandex root selection is not replaced after failed UCI reads', () => {
     assert.ok(f.events().some((e) => e.kind === 'rootChanged'));
     assert.equal(f.readState().saved['sheepfold.cloud.root_folder'], '/new-destination');
   });
-  for (const command of ['archive-push', 'push-events']) it(`stops ${command}${command === 'push-events' ? ' after the entry typo only is repaired' : ''} before MKCOL when configured root is unreadable`, (t) => {
-    const f = fixture(t, { failGet: 'sheepfold.cloud.root_folder', events: 'live\n', openPushPreflight: command === 'push-events', saved: { 'sheepfold.cloud.root_folder': '/chosen-root' } }); const before = f.readState();
+  for (const command of ['archive-push', 'push-events']) it(`stops ${command} before MKCOL when configured root is unreadable`, (t) => {
+    const f = fixture(t, { failGet: 'sheepfold.cloud.root_folder', events: 'live\n', saved: { 'sheepfold.cloud.root_folder': '/chosen-root' } }); const before = f.readState();
     const result = f.run([command]);
     assert.notEqual(result.status, 0); assert.equal(parse(result).error, 'root_unavailable');
     assert.deepEqual(f.readState(), before);

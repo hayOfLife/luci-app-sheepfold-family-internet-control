@@ -445,3 +445,9 @@ Yandex upload confirmation (r318, B116–B118): `tests/yandexUploadRuntime.test.
 PUT/HEAD проверяются отдельно; snapshot и проверка смены настроек охватывают один
 transfer, не общую транзакцию. HEAD без Content-Length отказывает; XML/quota/restore
 не объявлены готовыми. Контроль размера не равен checksum.
+
+Yandex configured journal snapshot (r319, B119–B121): `tests/yandexEventsRuntime.test.mjs`,
+`sheepfold-yandex-disk`, [протокол](../audit-fixes-r319.ru.md). В рамках `§ydav001`
+и существующего контракта `§logio1` выбранный файл копируется под общим writer-lock;
+сеть lock не удерживает. Никаких новых фоновых сборщиков, правил доступа или
+гарантии работы настоящего облака. Карта direct consumers обновлена.

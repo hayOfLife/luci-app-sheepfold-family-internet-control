@@ -1,5 +1,15 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-12, **r319**, based on `ea0d1db` (r318).
+B119–B121 repair the Yandex push-events entry and export the configured journal
+through a private snapshot under the shared log lock. The lock is released before
+HTTP; subsequent live events remain for the next copy. See the [121-card register](bug-register.ru.md)
+and [r319 report](audit-fixes-r319.ru.md). Real shell/files/flock with HTTP/UCI models;
+no real Yandex/router or new SDK/Android evidence. XML/quota/prune, restore, RAM
+limits and cross-process cloud transactions remain open. No access-policy changes.
+
+Historical continuations (not fresh evidence for this snapshot):
+
 Focused continuation: 2026-09-12, **r318**, based on `6228e37` (r317).
 B116–B118 repair Yandex upload/verify launch, independent HEAD size confirmation,
 private upload snapshots and detected configuration changes during one transfer.

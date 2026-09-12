@@ -21,7 +21,7 @@ describe('change impact advisor §impact1', () => {
   it('selects Yandex transport, storage callers and package checks', () => {
     const report = inspectChanges(['package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-yandex-disk']);
     assert.deepEqual(report.unknown, []);
-    for (const name of ['yandexDiskRuntime.test.mjs', 'yandexBackupRuntime.test.mjs', 'yandexUploadRuntime.test.mjs', 'logStorage.test.mjs', 'logWriterRuntime.test.mjs', 'portableShellAndStatus.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']) {
+    for (const name of ['yandexDiskRuntime.test.mjs', 'yandexBackupRuntime.test.mjs', 'yandexUploadRuntime.test.mjs', 'yandexEventsRuntime.test.mjs', 'logStorage.test.mjs', 'logWriterRuntime.test.mjs', 'portableShellAndStatus.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']) {
       assert.ok(report.directTests.includes(name), `missing Yandex consumer ${name}`);
     }
   });
@@ -52,10 +52,10 @@ describe('change impact advisor §impact1', () => {
     assert.ok(!recommendedCommands(report).automatic.includes(command));
   });
 
-  it('selects writer, API, maintenance, Google export and packaging for the shared journal path', () => {
+  it('selects writer, API, maintenance, cloud exports and packaging for the shared journal path', () => {
     const report = inspectChanges(['package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-log-common']);
     assert.deepEqual(report.unknown, []);
-    for (const name of ['logWriterRuntime.test.mjs', 'legacyLogRuntime.test.mjs', 'maintenanceJobs.test.mjs', 'maintenanceRotationRuntime.test.mjs', 'googleDriveUploadRuntime.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']) {
+    for (const name of ['logWriterRuntime.test.mjs', 'legacyLogRuntime.test.mjs', 'maintenanceJobs.test.mjs', 'maintenanceRotationRuntime.test.mjs', 'googleDriveUploadRuntime.test.mjs', 'yandexEventsRuntime.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']) {
       assert.ok(report.directTests.includes(name), `missing direct consumer ${name}`);
     }
   });

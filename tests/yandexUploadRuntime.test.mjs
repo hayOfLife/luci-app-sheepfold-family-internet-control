@@ -36,9 +36,16 @@ function fixture(t,opts={}) {
   writeFileSync(tracePath,'');writeFileSync(optsPath,JSON.stringify(opts));writeFileSync(statePath,'{}');
   const text=readFileSync(join(process.env.SHEEPFOLD_YANDEX_TEST_SOURCE||runtime,'sheepfold-yandex-disk'),'utf8');
   const sourceDigest=createHash('sha256').update(text).digest('hex');
-  const mapped=text.replaceAll('/tmp/sheepfold',path(ram)).replaceAll('/etc/config',path(config));
+  const mapped=text.replaceAll('/tmp/sheepfold',path(ram)).replaceAll('/etc/config',path(config)).replaceAll('/usr/libexec/sheepfold/',path(bin)+'/');
   const put=(name,data)=>{writeFileSync(join(bin,name),data);chmodSync(join(bin,name),0o755);};
-  put('entry',mapped);const boundary='\ncommand_name="${1:-}"';assert.ok(mapped.lastIndexOf(boundary)>0);
+  put('entry',mapped);
+  // На Windows эта модель только пропускает lock; его конкурентность проверяет Linux-suite.
+  if (process.platform === 'win32') put('flock', '#!/bin/sh\nexit 0\n');
+  // Экспортёр загружает настоящие общие readers/lock; пути остаются в fixture.
+  for (const name of ['sheepfold-log-common', 'sheepfold-lock-common']) {
+    put(name, readFileSync(join(runtime, name), 'utf8').replaceAll('/tmp/sheepfold', path(ram)));
+  }
+const boundary='\ncommand_name="${1:-}"';assert.ok(mapped.lastIndexOf(boundary)>0);
   put('library',mapped.slice(0,mapped.lastIndexOf(boundary))+'\n');
   const tools={};
   for(const name of ['cp','cmp','chmod','mktemp','wc','awk']){

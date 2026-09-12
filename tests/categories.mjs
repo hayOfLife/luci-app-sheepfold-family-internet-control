@@ -166,7 +166,7 @@ export const testCategories = Object.freeze({
   ],
   backend: [
     'yandexDiskRuntime.test.mjs',
-    'yandexBackupRuntime.test.mjs', 'yandexUploadRuntime.test.mjs',
+    'yandexBackupRuntime.test.mjs', 'yandexUploadRuntime.test.mjs', 'yandexEventsRuntime.test.mjs',
     'googleDriveUploadRuntime.test.mjs',
     'legacyLogRuntime.test.mjs',
     'logWriterRuntime.test.mjs',
@@ -332,7 +332,7 @@ export const testCategories = Object.freeze({
   ],
   security: [
     'yandexDiskRuntime.test.mjs',
-    'yandexBackupRuntime.test.mjs', 'yandexUploadRuntime.test.mjs',
+    'yandexBackupRuntime.test.mjs', 'yandexUploadRuntime.test.mjs', 'yandexEventsRuntime.test.mjs',
     'googleDriveUploadRuntime.test.mjs',
     'legacyLogRuntime.test.mjs',
     'logWriterRuntime.test.mjs',

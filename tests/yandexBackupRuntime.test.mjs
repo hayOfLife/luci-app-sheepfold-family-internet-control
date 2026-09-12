@@ -49,9 +49,16 @@ function fixture(t, options = {}) {
   const optionsPath = join(root, 'options.json'); writeFileSync(optionsPath, JSON.stringify(options));
   const source = readFileSync(join(process.env.SHEEPFOLD_YANDEX_TEST_SOURCE || runtime, 'sheepfold-yandex-disk'), 'utf8');
   const digest = createHash('sha256').update(source).digest('hex');
-  const mapped = source.replaceAll('/tmp/sheepfold', path(ram)).replaceAll('/etc/config', path(config));
+  const mapped = source.replaceAll('/tmp/sheepfold', path(ram)).replaceAll('/etc/config', path(config)).replaceAll('/usr/libexec/sheepfold/', path(bin) + '/');
   const put = (name, text) => { writeFileSync(join(bin, name), text); chmodSync(join(bin, name), 0o755); };
   put('entry', mapped);
+  // На Windows эта модель только пропускает lock; его конкурентность проверяет Linux-suite.
+  if (process.platform === 'win32') put('flock', '#!/bin/sh\nexit 0\n');
+  // Экспортёр загружает настоящие общие readers/lock; пути остаются в fixture.
+  for (const name of ['sheepfold-log-common', 'sheepfold-lock-common']) {
+    put(name, readFileSync(join(runtime, name), 'utf8').replaceAll('/tmp/sheepfold', path(ram)));
+  }
+
   const boundary = '\ncommand_name="${1:-}"'; assert.ok(mapped.lastIndexOf(boundary) > 0);
   put('library', mapped.slice(0, mapped.lastIndexOf(boundary)) + '\n');
   const toolNames = ['uci', 'curl', 'tar', 'cp', 'cmp', 'chmod', 'mktemp', 'date'];
@@ -156,7 +163,7 @@ sys.exit(result.returncode)
 `);
   const env = { ...process.env, PYTHONUTF8:'1', PYTHONIOENCODING:'utf-8', BACKUP_OPTIONS: path(optionsPath), BACKUP_TRACE: path(tracePath), BACKUP_TOOLS: path(join(root, 'tools.json')), BACKUP_OLD_STAGE: path(stage), BACKUP_CONFIG: path(join(config, 'sheepfold')) };
   if (options.noGzip) {
-    for (const name of ['sh','mkdir','rm','basename','awk','sed','head','grep','sort','cat','tr','wc',...(/[\\/]/.test(pythonShell)?[]:[pythonShell])]) {
+    for (const name of ['sh','flock','sleep','mkdir','rm','basename','awk','sed','head','grep','sort','cat','tr','wc',...(/[\\/]/.test(pythonShell)?[]:[pythonShell])]) {
       const found=spawnSync('sh',['-c','command -v "$1"','which',name],{encoding:'utf8'});
       assert.equal(found.status,0); symlinkSync(found.stdout.trim(),join(bin,name));
     }

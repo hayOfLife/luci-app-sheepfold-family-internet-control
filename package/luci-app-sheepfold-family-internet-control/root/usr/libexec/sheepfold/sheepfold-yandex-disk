@@ -807,11 +807,55 @@ prune_remote_logs() {
 	done
 }
 
-cmd_push_events() {
-	remote_path verify_json
+# Код 4 — подтверждённое отсутствие выбранного журнала; ошибка UCI/чтения
+# не разрешает отправить старый events.log. Общий lock держим только для снимка,
+# чтобы медленная сеть не останавливала запись, чтение и ротацию событий.
+yandex_events_snapshot() (
+	[ "$#" -eq 1 ] && [ -n "$1" ] || exit 1
+	destination="$1"
+	umask 077
+	logCommon="${0%/*}/sheepfold-log-common"
+	[ -r "$logCommon" ] || logCommon=/usr/libexec/sheepfold/sheepfold-log-common
+	lockCommon="${0%/*}/sheepfold-lock-common"
+	[ -r "$lockCommon" ] || lockCommon=/usr/libexec/sheepfold/sheepfold-lock-common
+	. "$logCommon" || exit 1
+	. "$lockCommon" || exit 1
+	logFile="$(sheepfold_log_path_read uci "$EVENTS_LOG")" || exit 1
+	sheepfold_log_path_check "$logFile" allow-missing || exit 1
+	sheepfold_lock_acquire "${SHEEPFOLD_LOG_LOCK:-/tmp/sheepfold/log-maintenance.flock}" 5 || exit 1
+	trap 'sheepfold_lock_release' EXIT
+	trap 'exit 1' HUP INT TERM
+	# После ожидания lock заново выбираем путь: writer мог уже перейти на новый.
+	logFile="$(sheepfold_log_path_read uci "$EVENTS_LOG")" || exit 1
+	sheepfold_log_path_check "$logFile" allow-missing || exit 1
+	[ -f "$logFile" ] || exit 4
+	cp "$logFile" "$destination" || exit 1
+	chmod 600 "$destination" || exit 1
+	cmp -s "$logFile" "$destination" || exit 1
+	currentPath="$(sheepfold_log_path_read uci "$EVENTS_LOG")" || exit 1
+	[ "$currentPath" = "$logFile" ] || exit 1
+	sheepfold_log_path_check "$logFile" || exit 1
+)
 
+cmd_push_events() (
 	[ "$(global_get log_storage ram)" = "yandex_disk" ] || return 0
-	[ -f "$EVENTS_LOG" ] || return 0
+	umask 077
+	work="$(yandex_archive_workdir)" || {
+		printf '{"ok":false,"error":"events_snapshot_failed"}\n'
+		return 1
+	}
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	snapshotStatus=0
+	yandex_events_snapshot "$work/events.log" || snapshotStatus=$?
+	case "$snapshotStatus" in
+		0) ;;
+		4) return 0 ;;
+		*)
+			write_sync_status push-events false "events snapshot failed" >/dev/null 2>&1 || :
+			printf '{"ok":false,"error":"events_snapshot_failed"}\n'
+			return 1 ;;
+	esac
 	require_tooling || return 1
 
 	root="$(normalize_root_folder)" || {
@@ -828,7 +872,9 @@ cmd_push_events() {
 	}
 
 	remote_path="${root}/logs/events.log"
-	verify_json="$(upload_and_verify "$EVENTS_LOG" "$remote_path")" || {
+	# Uploader сравнивает именно снимок. Новое событие в живом журнале не
+	# отменяет уже подтверждённую копию и остаётся для следующей отправки.
+	verify_json="$(upload_and_verify "$work/events.log" "$remote_path")" || {
 		write_sync_status push-events false "upload verify failed"
 		printf '%s\n' "$verify_json"
 		return 1
@@ -836,7 +882,7 @@ cmd_push_events() {
 
 	write_sync_status push-events true "events.log uploaded"
 	printf '%s\n' "$verify_json"
-}
+)
 
 cmd_archive_push() (
 	[ "$(global_get log_storage ram)" = "yandex_disk" ] || return 0
@@ -860,19 +906,15 @@ cmd_archive_push() (
 		yandex_archive_prepare_error backup_prepare_failed
 		return 1
 	}
-	events_copy=''
-	if [ -e "$EVENTS_LOG" ] || [ -L "$EVENTS_LOG" ]; then
-		[ -f "$EVENTS_LOG" ] && [ ! -L "$EVENTS_LOG" ] || {
-			yandex_archive_prepare_error events_snapshot_failed; return 1;
-		}
-		stamp="$(yandex_archive_stamp)" || { yandex_archive_prepare_error events_snapshot_failed; return 1; }
-		events_copy="$work/events-$stamp.log"
-		if ! cp "$EVENTS_LOG" "$events_copy" || ! chmod 600 "$events_copy" ||
-			! cmp -s "$EVENTS_LOG" "$events_copy"; then
-			yandex_archive_prepare_error events_snapshot_failed
-			return 1
-		fi
-	fi
+	stamp="$(yandex_archive_stamp)" || { yandex_archive_prepare_error events_snapshot_failed; return 1; }
+	events_copy="$work/events-$stamp.log"
+	snapshotStatus=0
+	yandex_events_snapshot "$events_copy" || snapshotStatus=$?
+	case "$snapshotStatus" in
+		0) ;;
+		4) events_copy='' ;;
+		*) yandex_archive_prepare_error events_snapshot_failed; return 1 ;;
+	esac
 	ensure_webdav_path "$root" || {
 		printf '{"ok":false,"error":"remote_prepare_failed"}\n'
 		return 1
