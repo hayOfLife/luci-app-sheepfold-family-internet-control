@@ -165,6 +165,7 @@ export const testCategories = Object.freeze({
     'siteListResilience.test.mjs',
   ],
   backend: [
+    'yandexDiskRuntime.test.mjs',
     'googleDriveUploadRuntime.test.mjs',
     'legacyLogRuntime.test.mjs',
     'logWriterRuntime.test.mjs',
@@ -329,6 +330,7 @@ export const testCategories = Object.freeze({
     'tokenDeviceBinding.test.mjs',
   ],
   security: [
+    'yandexDiskRuntime.test.mjs',
     'googleDriveUploadRuntime.test.mjs',
     'legacyLogRuntime.test.mjs',
     'logWriterRuntime.test.mjs',

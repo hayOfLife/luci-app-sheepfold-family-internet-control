@@ -98,6 +98,16 @@ const controlRuntimeConsumers = Object.freeze([
 
 export const impactRules = Object.freeze([
   Object.freeze({
+    id: 'yandexWebdavBoundary',
+    area: 'Транспорт и статус Яндекс Диска',
+    pattern: /sheepfold-yandex-disk$/,
+    categories: ['backend', 'security', 'packaging'],
+    checks: ['routerReadOnly'],
+    risk: 'high',
+    directTests: Object.freeze(['yandexDiskRuntime.test.mjs', 'logStorage.test.mjs', 'logWriterRuntime.test.mjs', 'portableShellAndStatus.test.mjs', 'packageHardeningRuntime.test.mjs', 'testIpkPermissions.test.mjs']),
+    review: 'PROPFIND: один URL и целый Depth, отказ curl/HTTP не даёт успех. Status не сохраняет UCI; preflight архива не зависит от записанного authorized. XML/restore и реальное облако требуют отдельной проверки.',
+  }),
+  Object.freeze({
     id: 'googleDriveUpload',
     area: 'Проверяемая загрузка Google Drive',
     pattern: /sheepfold-google-drive$/,

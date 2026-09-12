@@ -190,6 +190,10 @@
 
 - Журнал всегда в RAM (`/tmp/sheepfold/events.log`); `log_storage` задаёт **дополнительное** зеркалирование (`ram` / `usb` / `yandex_disk`).
 - Yandex Disk — **WebDAV** + пароль приложения, не OAuth REST; helper: `sheepfold-yandex-disk`, диспетчер: `sheepfold-log-storage`.
+- r314 (§ydav001): передавать Depth отдельным числом helper, а целый заголовок —
+  одним аргументом curl; `status` не должен писать UCI. 207 без разбора propstat
+  не доказывает всю XML-модель. В R15 остаются известные ошибки quota/readers/restore;
+  наличие кнопки восстановления ниже не означает проверенный безопасный runtime.
 - Debounce выгрузки живых событий: **300 с** (`YANDEX_PUSH_INTERVAL` в `sheepfold-log`).
 - Восстановление конфига с диска — `yandex-disk-restore-config`; в UI есть выбор бэкапа и confirm; safety backup в `/tmp/sheepfold/`.
 - Подробности: [`docs/yandex-disk-storage.ru.md`](yandex-disk-storage.ru.md).

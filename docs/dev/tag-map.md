@@ -430,6 +430,8 @@ revision; неизвестный global state отключает обе кома
 
 | `§gdlst01` | VERIFIED_DRIVE_FILE_LIST | облачное хранение/тестирование | Пользовательский list проверяет обе папки и контекст до успешного ответа. jshn сохраняет name/bytes/modified; HTTP/JSON/страница с продолжением не заменяются пустым списком. Предел 200 объектов/256 КиБ, не полная пагинация или потоковая RAM-квота. Файлы: `google-drive-storage.ru.md`, `audit-fixes-r310.ru.md`, `bug-register.ru.md`, `test-strategy.ru.md`, `googleDriveUploadRuntime.test.mjs`. Восстановление конфигурации не активируется этой правкой. |
 
+| `§ydav001` | YANDEX_WEBDAV_OBSERVATIONAL_STATUS | облачное хранение/тестирование | Целый заголовок Depth, один URL, проверка завершения curl и HTTP; status Яндекс Диска не пишет UCI. XML, backup и restore отдельно ограничены R15. Файлы: `yandex-disk-storage.ru.md`, `audit-fixes-r314.ru.md`, `tests/yandexDiskRuntime.test.mjs`. |
+
 ---
 
 *Файл поддерживается разработчиками и ИИ-агентами вручную. При добавлении нового тега — обязательно добавить строку в нужный раздел. При удалении или изменении смысла — обновить/удалить строку и найти все вхождения через `grep -r '§XXXXXXX' .`*
