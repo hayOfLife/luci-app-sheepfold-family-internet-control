@@ -881,3 +881,14 @@ mutation и status observation safety. Непосредственные сосе
 настоящая блокировка во время cp и её отсутствие во время HTTP, сохранность новых
 событий, отсутствие сети при неподготовленном снимке и очистка собственного workspace.
 Протоколы и ограничения: [отчёт r313](audit-fixes-r313.ru.md).
+
+## Выборочные проверки подготовки Яндекс-backup (r317)
+
+Из корня репозитория: `node scripts/run-test-category.mjs --file yandexBackupRuntime.test.mjs --file yandexDiskRuntime.test.mjs`.
+Нужны Node.js, Python 3, POSIX sh и cp/cmp/tar; на Windows — Git Bash и
+`PYTHON_EXECUTABLE`. Сценарии ссылок/прав требуют POSIX, отдельный BusyBox tar
+сценарий выполняется при наличии applet. Ожидается exit 0; меняются только
+уникальные `.build`-fixtures, очищаемые после теста. Сеть/UCI моделируются.
+Положительная модель uploader доказывает подготовку, не доставку; полный native
+uploader пока обязан сообщить собственный известный отказ, а не фиктивный успех.
+Точные команды, прошлые неуспехи и зависимости: [r317](audit-fixes-r317.ru.md).

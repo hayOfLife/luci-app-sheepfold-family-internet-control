@@ -24,6 +24,9 @@ function fixture(t, opts = {}) {
   const root = mkdtempSync(join(parent, 'case-'));
   const bin = join(root, 'bin'), ram = join(root, 'ram'), config = join(root, 'config'), work = join(root, 'work');
   for (const dir of [bin, ram, config, work]) mkdirSync(dir);
+  // r317 проверяет backup до MKCOL. Реальный синтетический config сохраняет
+  // достижимость прежних assertions транспорта; условие production не ослабляется.
+  writeFileSync(join(config, 'sheepfold'), "config global 'global'\n\toption block_all '0'\n");
   for (const name of opts.localNames || []) writeFileSync(join(work, name), 'local fixture');
   if (opts.events !== undefined) writeFileSync(join(ram, 'events.log'), opts.events);
   const archiveDir = join(ram, '.private', 'archive');

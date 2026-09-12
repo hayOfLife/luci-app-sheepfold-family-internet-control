@@ -320,16 +320,66 @@ upload_and_verify() {
 	return 1
 }
 
-create_config_backup() {
-	mkdir -p "$BACKUP_STAGING"
-	backup_file="$BACKUP_STAGING/sheepfold-config-$(date +%Y%m%d-%H%M%S).tar.gz"
+# Имя до секунды остаётся внешним именем копии, но не определяет владельца
+# локального файла. Каждый архивный проход получает собственный RAM-каталог.
+yandex_archive_workdir() (
+	umask 077
+	[ ! -L /tmp/sheepfold ] || exit 1
+	mkdir -p /tmp/sheepfold || exit 1
+	chmod 700 /tmp/sheepfold || exit 1
+	work="$(mktemp -d /tmp/sheepfold/.yandex-archive.XXXXXX)" || exit 1
+	# Не удаляем частичный stdout отказавшего mktemp: это может быть чужой путь.
+	chmod 700 "$work" || { rm -rf "$work"; exit 1; }
+	printf '%s' "$work"
+)
+
+yandex_archive_stamp() (
+	stamp="$(date +%Y%m%d-%H%M%S)" || exit 1
+	case "$stamp" in
+		[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+		*) exit 1 ;;
+	esac
+	printf '%s' "$stamp"
+)
+
+create_config_backup() (
+	work="${1:-}"
+	[ -n "$work" ] && [ -d "$work" ] && [ ! -L "$work" ] || exit 1
+	umask 077
+	[ -f /etc/config/sheepfold ] && [ ! -L /etc/config/sheepfold ] || exit 1
+	mkdir "$work/config-source" || exit 1
+	cp -p /etc/config/sheepfold "$work/config-source/sheepfold" || exit 1
+	chmod 600 "$work/config-source/sheepfold" || exit 1
+	cmp -s /etc/config/sheepfold "$work/config-source/sheepfold" || exit 1
+	stamp="$(yandex_archive_stamp)" || exit 1
+	backup_file="$work/sheepfold-config-$stamp.tar.gz"
 	if command -v gzip >/dev/null 2>&1; then
-		tar -C /etc/config -czf "$backup_file" sheepfold 2>/dev/null || return 1
+		tar -C "$work/config-source" -czf "$backup_file" sheepfold || exit 1
+		list_flags=-tzf
+		read_flags=-xzOf
 	else
 		backup_file="${backup_file%.gz}"
-		tar -C /etc/config -cf "$backup_file" sheepfold 2>/dev/null || return 1
+		tar -C "$work/config-source" -cf "$backup_file" sheepfold || exit 1
+		list_flags=-tf
+		read_flags=-xOf
 	fi
+	chmod 600 "$backup_file" || exit 1
+	# Проверяем свой архив до отправки, не включаем восстановление. Читаем в
+	# stdout: пути/права из архива не применяются к /etc/config или файловой системе.
+	members="$(tar "$list_flags" "$backup_file")" || exit 1
+	[ "$members" = sheepfold ] || exit 1
+	tar "$read_flags" "$backup_file" sheepfold >"$work/config-verified" || exit 1
+	cmp -s "$work/config-source/sheepfold" "$work/config-verified" || exit 1
+	[ ! -L /etc/config/sheepfold ] || exit 1
+	cmp -s /etc/config/sheepfold "$work/config-source/sheepfold" || exit 1
 	printf '%s' "$backup_file"
+)
+
+yandex_archive_prepare_error() {
+	# Неудача служебного статуса не должна скрывать исходную ошибку подготовки.
+	write_sync_status archive-push false "completed with errors" >/dev/null 2>&1 || :
+	printf '{"ok":false,"error":"%s","pushed":0,"errors":1}\n' "$1"
+	return 1
 }
 
 propfind_folder_json_array() {
@@ -685,7 +735,7 @@ cmd_push_events() {
 	printf '%s\n' "$verify_json"
 }
 
-cmd_archive_push() {
+cmd_archive_push() (
 	[ "$(global_get log_storage ram)" = "yandex_disk" ] || return 0
 	require_tooling || return 1
 	# Просмотр больше не записывает authorized. Явная отправка проверяет доступ
@@ -697,6 +747,29 @@ cmd_archive_push() {
 		return 1
 	}
 	quota_bytes=$(( $(quota_mb) * 1024 * 1024 ))
+	# Подготовка всех обязательных локальных копий предшествует MKCOL/PUT и
+	# удалению отправленных RAM-архивов. Сбой tar не означает «копия не нужна».
+	umask 077
+	work="$(yandex_archive_workdir)" || { yandex_archive_prepare_error backup_prepare_failed; return 1; }
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	backup_file="$(create_config_backup "$work")" || {
+		yandex_archive_prepare_error backup_prepare_failed
+		return 1
+	}
+	events_copy=''
+	if [ -e "$EVENTS_LOG" ] || [ -L "$EVENTS_LOG" ]; then
+		[ -f "$EVENTS_LOG" ] && [ ! -L "$EVENTS_LOG" ] || {
+			yandex_archive_prepare_error events_snapshot_failed; return 1;
+		}
+		stamp="$(yandex_archive_stamp)" || { yandex_archive_prepare_error events_snapshot_failed; return 1; }
+		events_copy="$work/events-$stamp.log"
+		if ! cp "$EVENTS_LOG" "$events_copy" || ! chmod 600 "$events_copy" ||
+			! cmp -s "$EVENTS_LOG" "$events_copy"; then
+			yandex_archive_prepare_error events_snapshot_failed
+			return 1
+		fi
+	fi
 	ensure_webdav_path "$root" || {
 		printf '{"ok":false,"error":"remote_prepare_failed"}\n'
 		return 1
@@ -724,28 +797,20 @@ cmd_archive_push() {
 		fi
 	done
 
-	if [ -f "$EVENTS_LOG" ]; then
-		events_copy="$BACKUP_STAGING/events-$(date +%Y%m%d-%H%M%S).log"
-		mkdir -p "$BACKUP_STAGING"
-		cp "$EVENTS_LOG" "$events_copy"
+	if [ -n "$events_copy" ]; then
 		remote="${root}/logs/$(basename "$events_copy")"
 		if upload_and_verify "$events_copy" "$remote" >/dev/null 2>&1; then
 			pushed=$((pushed + 1))
 		else
 			errors=$((errors + 1))
 		fi
-		rm -f "$events_copy"
 	fi
 
-	backup_file="$(create_config_backup 2>/dev/null || true)"
-	if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
-		remote="${root}/backups/$(basename "$backup_file")"
-		if upload_and_verify "$backup_file" "$remote" >/dev/null 2>&1; then
-			pushed=$((pushed + 1))
-		else
-			errors=$((errors + 1))
-		fi
-		rm -f "$backup_file"
+	remote="${root}/backups/$(basename "$backup_file")"
+	if upload_and_verify "$backup_file" "$remote" >/dev/null 2>&1; then
+		pushed=$((pushed + 1))
+	else
+		errors=$((errors + 1))
 	fi
 
 	prune_remote_logs "$root" "$quota_bytes" || true
@@ -758,7 +823,7 @@ cmd_archive_push() {
 
 	write_sync_status archive-push true "archive push completed"
 	printf '{"ok":true,"pushed":%d,"errors":0}\n' "$pushed"
-}
+)
 
 cmd_sync_status() {
 	if [ -r "$SYNC_STATUS_FILE" ]; then

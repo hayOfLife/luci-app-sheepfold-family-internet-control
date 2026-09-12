@@ -1,5 +1,15 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-12, **r317**, based on `17eab4b` (r316).
+B114–B115 validate the Yandex local config/events preparation before cloud mutation
+and isolate every run in an owned private directory. Prior same-name snapshots
+survive errors and retries. See [115-card register](bug-register.ru.md) and
+[r317 report](audit-fixes-r317.ru.md). The native uploader still has known failures;
+positive uploader-boundary models prove preparation, not WebDAV delivery or restore.
+No Google Drive, Android, access policy, workflow or runner production changes.
+
+Historical continuations (not fresh evidence for this snapshot):
+
 Focused continuation: 2026-09-12, **r315**, based on `de179d3` (r314).
 B109–B111 repair Yandex MKCOL path splitting/caller isolation, reject unconfirmed
 preparation and preserve configured root intent after UCI failures. See the
