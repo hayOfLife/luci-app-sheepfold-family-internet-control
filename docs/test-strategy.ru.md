@@ -962,3 +962,12 @@ helpers (`yandexDiskRuntime`, `yandexUploadRuntime`, `yandexBackupRuntime`,
 writer, package hardening/IPK и карта отбора. Несвязанные Android/firewall не нужны.
 Полный suite не требуется по факту нового коммита. Повторение и ограничения —
 [отчёт r322](audit-fixes-r322.ru.md).
+
+## Облачные отправители: выбор backend в r323
+
+`yandexContextRuntime.test.mjs` и `googleDriveUploadRuntime.test.mjs` содержат
+`selected storage boundary`: HTTP-модель меняет только `global.log_storage`,
+проверяются след изменения, последующие запросы и сохранность архивов. Успех не
+означает нативный UCI, живое облако или возможность отозвать уже ушедший HTTP.
+Системное sh используется для детерминированных подстановок; BusyBox syntax не
+подменяет fault-injection runtime. [Runbook r323](audit-fixes-r323.ru.md).

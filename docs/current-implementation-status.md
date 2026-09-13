@@ -1,5 +1,17 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-13, **r323**, based on `276d4d0` (r322).
+B130 checks the still-selected backend throughout both cloud senders, not merely
+the credentials/root. A noticed switch to RAM/another backend or a failed reread
+stops further requests and unconfirmed archive deletion. B131 rejects Google
+sender selection-read failures instead of silently skipping. Other commands keep
+their explicit read/download contracts. See the [131-card register](bug-register.ru.md)
+and [r323 report](audit-fixes-r323.ru.md). Already completed HTTP/deletions are not
+rolled back. HTTP/UCI/jshn are models; no new native/cloud/router/SDK evidence.
+Access policy, Android, workflows and runner implementations are unchanged.
+
+Historical continuations (their results are not fresh evidence for this snapshot):
+
 Focused continuation: 2026-09-13, **r322**, based on `2754677` (r321).
 B128–B129 validate the configured Yandex quota and preserve one cloud-settings
 context throughout each archive/events command. Nested uploaders no longer reset

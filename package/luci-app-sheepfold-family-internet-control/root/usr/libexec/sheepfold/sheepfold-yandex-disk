@@ -8,6 +8,7 @@ EVENTS_LOG="/tmp/sheepfold/events.log"
 BACKUP_STAGING="/tmp/sheepfold/.yandex-backup-staging"
 SYNC_STATUS_FILE="/tmp/sheepfold/.yandex-sync-status.json"
 YANDEX_DOWNLOAD_ROOT="/tmp"
+senderStoragePinned=0
 
 uci_get() {
 	uci -q get "sheepfold.cloud.$1" 2>/dev/null || printf '%s' "${2:-}"
@@ -287,6 +288,13 @@ yandex_transfer_begin() {
 }
 
 yandex_transfer_settings_ok() (
+	# Выбор RAM/другого облака отозвал дальнейшую отправку. Проверяем только
+	# log_storage: чужой несвязанный global-черновик не меняет назначение.
+	# Сбой get (даже с прежним значением в stdout) не подтверждает выбор.
+	if [ "$senderStoragePinned" = 1 ]; then
+		selected="$(uci -q get sheepfold.global.log_storage 2>/dev/null)" || exit 1
+		[ "$selected" = yandex_disk ] || exit 1
+	fi
 	[ "${transferPinned:-0}" = 1 ] || exit 0
 	current="$(uci -q show sheepfold.cloud 2>/dev/null)" || exit 1
 	[ "$current" = "$transferSettings" ]
@@ -452,6 +460,8 @@ sheepfold.global.log_storage='*) yandex_transfer_error storage_unavailable; exit
 		backend=ram
 	fi
 	[ "$backend" = yandex_disk ] || { skipped=1; exit 0; }
+	# Флаг наследуют вложенные uploader, но не самостоятельные download/verify.
+	senderStoragePinned=1
 	"$2"
 )
 

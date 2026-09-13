@@ -13,6 +13,8 @@
  * явная архивная отправка проверяет текущие реквизиты, не старый флаг.
  * r312: реальные tar/cp/cmp проверяют config/events до отправки; закрытые
  * каталоги одной операции не подменяют оставленные файлы другой операции.
+ * r323: backend-switch и ошибка чтения выбранного хранилища проверяются
+ * на полном sender с трассой, без изменения gdrive-реквизитов.
  * Подмена источника повторяет те же assertions на предыдущей версии.
  */
 import assert from 'node:assert/strict';
@@ -30,6 +32,7 @@ const native = process.platform === 'linux';
 const payload = 'synthetic archive payload\n';
 const payloadBytes = Buffer.byteLength(payload);
 function fixture(t, options = {}) {
+  const results = [];
   const parent = join(repo, '.build', 'gdrive-fixtures'); mkdirSync(parent, { recursive: true });
   const root = mkdtempSync(join(parent, 'case-')); t.after(() => {
     // Экспорт включается явно только для синтетического fixture, не production.
@@ -37,7 +40,8 @@ function fixture(t, options = {}) {
     if (evidence && existsSync(traceFile)) {
       mkdirSync(evidence, { recursive: true });
       const name = createHash('sha256').update(t.name).digest('hex').slice(0,16);
-      writeFileSync(join(evidence, `${name}.json`), JSON.stringify({ scenario:t.name,
+      writeFileSync(join(evidence, `${name}.json`), JSON.stringify({ scenario:t.name, results,
+        sourceDigest: createHash('sha256').update(readFileSync(join(source, 'sheepfold-google-drive'))).digest('hex'),
         trace:readFileSync(traceFile,'utf8').trim().split('\n').filter(Boolean).map((line)=>JSON.parse(line)),
         archiveExists:existsSync(archive) }, null, 2)+'\n');
     }
@@ -87,13 +91,25 @@ function fixture(t, options = {}) {
 args=[x for x in sys.argv[1:] if x!='-q']; opts=json.load(open(${JSON.stringify(settings)})); values=opts['credentials']
 if args[0]=='get':
  key=args[1].split('.')[-1]
- if key=='log_storage': print('google_drive')
+ if key=='log_storage':
+  if opts.get('storageFault') or (opts.get('storageFaultAfterChange') and opts.get('storageChanged')):
+   with open(${JSON.stringify(traceFile)},'a') as f:f.write(json.dumps({'kind':'storageReadFault'})+'\\n')
+   print(opts.get('storagePartial',''),end='');sys.exit(7)
+  if opts.get('noStorage'):sys.exit(1)
+  print(opts.get('storage','google_drive'))
  elif key=='log_cache_path':
   if 'logPath' not in opts: sys.exit(1)
   print(opts['logPath'],end='')
  elif key in values and values[key] is not None: print(values[key],end='')
  else: sys.exit(1)
 elif args[0]=='show':
+ if args[1]=='sheepfold.global':
+  if opts.get('storageShowFault'):
+   with open(${JSON.stringify(traceFile)},'a') as f:f.write(json.dumps({'kind':'storageShowFault'})+'\\n')
+   print('sheepfold.global=global');sys.exit(7)
+  print('sheepfold.global=global')
+  if not opts.get('noStorage'):print('sheepfold.global.log_storage='+repr(opts.get('storage','google_drive')))
+  sys.exit(0)
  if args[1]=='sheepfold' and 'logPath' in opts: print('sheepfold.global.log_cache_path='+repr(opts['logPath']))
  print('sheepfold.gdrive=gdrive')
  for key,value in sorted(values.items()):
@@ -211,6 +227,13 @@ if kind==opts.get('appendEventAt'):
  pathlib.Path(os.environ['GDRIVE_OPTIONS']).write_text(json.dumps(opts))
 if kind=='metadata' and opts.get('removeJshnAtMetadata'): pathlib.Path(opts['jshnFile']).unlink()
 if kind=='metadata' and opts.get('changeSource'): pathlib.Path(opts['archive']).write_text('concurrent data\\n')
+if opts.get('changeStorageAt')==kind:
+ opts['storageChanged']=True;opts['changeStorageAt']=None
+ if opts.get('unrelatedStorageChange'):opts['unrelatedGlobal']='1'
+ elif opts.get('nextStorage','ram') is None:opts['noStorage']=True
+ else:opts['storage']=opts.get('nextStorage','ram')
+ pathlib.Path(os.environ['GDRIVE_OPTIONS']).write_text(json.dumps(opts))
+ event['storageChanged']=True
 if opts.get('changeContextAt')==kind:
  opts['credentials'].update(opts.get('contextChange',{'refresh_token':'changed-during-drive'}))
  opts['changeContextAt']=None
@@ -262,9 +285,13 @@ except (ValueError,KeyError,IndexError,AssertionError,TypeError): sys.exit(1)
     `json_add_string() { local encoded; encoded="$(printf '%s' "$jsonData" | python3 -S ${q(path(join(bin,'jsonModel.py')))} add string "$1" "$2")" || return 1; eval "jsonData=$encoded"; }\n` +
     `json_add_int() { local encoded; encoded="$(printf '%s' "$jsonData" | python3 -S ${q(path(join(bin,'jsonModel.py')))} add int "$1" "$2")" || return 1; eval "jsonData=$encoded"; }\n` +
     `json_dump() { printf '%s' "$jsonData" | python3 -S ${q(path(join(bin,'jsonModel.py')))} dump; }\n`);
-  const run = (command = 'archive-push', args = []) => spawnSync(process.platform === 'win32' ? 'bash' : 'sh',
-    ['-c', 'PATH="$1:$PATH"; export PATH; shift; exec sh "$@"', 'gdrive-fixture', path(bin), path(join(bin, 'sheepfold-google-drive')), command, ...args],
-    { cwd: repo, env: { ...process.env, GDRIVE_OPTIONS: path(settings), GDRIVE_TRACE: path(traceFile) }, encoding: 'utf8', timeout: 20000 });
+  const run = (command = 'archive-push', args = []) => {
+    const result = spawnSync(process.platform === 'win32' ? 'bash' : 'sh',
+      ['-c', 'PATH="$1:$PATH"; export PATH; shift; exec sh "$@"', 'gdrive-fixture', path(bin), path(join(bin, 'sheepfold-google-drive')), command, ...args],
+      { cwd: repo, env: { ...process.env, GDRIVE_OPTIONS: path(settings), GDRIVE_TRACE: path(traceFile) }, encoding: 'utf8', timeout: 20000 });
+    results.push({ command, args, status: result.status, stdout: result.stdout, stderr: result.stderr });
+    return result;
+  };
   const runAsync = (command) => {
     const child=spawn('sh',[path(join(bin,'sheepfold-google-drive')),command],{
       cwd:repo,env:{...process.env,PATH:`${bin}:${process.env.PATH}`,GDRIVE_OPTIONS:path(settings),GDRIVE_TRACE:path(traceFile)},stdio:['ignore','pipe','pipe']});
@@ -1599,5 +1626,59 @@ describe('Google Drive journal shared-lock coordination',{skip:!native},()=>{
       // Drain the uploader before fixture cleanup, including a failing baseline.
       await upload.finished;
     }
+  });
+});
+
+/* Проверяем отзыв выбранного backend, не отзыв OAuth и не rollback уже ушедшего HTTP. */
+describe('Google Drive selected storage boundary', () => {
+  for (const action of ['archive-push', 'push-events']) {
+    for (const storagePartial of ['', 'google_drive']) it(`${action} rejects failed initial storage read ${JSON.stringify(storagePartial)}`, t => {
+      const f = fixture(t, { storageFault: true, storagePartial });
+      writeFileSync(join(f.ram, 'events.log'), payload);
+      const r = f.run(action); failed(r); assert.equal(JSON.parse(r.stdout).error, 'storage_unavailable');
+      assert.ok(f.trace().some(e => e.kind === 'storageReadFault')); assert.ok(existsSync(f.archive));
+      assert.ok(!f.trace().some(e => ['token','folderLookup','folderCreate','upload'].includes(e.kind)));
+    });
+    for (const options of [{ storage: 'ram' }, { noStorage: true }]) it(`${action} preserves confirmed nonselected skip ${JSON.stringify(options)}`, t => {
+      const f = fixture(t, options); writeFileSync(join(f.ram, 'events.log'), payload);
+      const r = f.run(action); succeeded(r); assert.equal(r.stdout, ''); assert.ok(existsSync(f.archive));
+      assert.deepEqual(f.trace(), []);
+    });
+    for (const changeStorageAt of ['folderLookup', 'upload', 'metadata']) it(`${action} stops after selection changes at ${changeStorageAt}`, t => {
+      const f = fixture(t, { changeStorageAt }); writeFileSync(join(f.ram, 'events.log'), payload);
+      const r = f.run(action); const trace = f.trace(), at = trace.findIndex(e => e.storageChanged);
+      assert.ok(at >= 0, 'mutation reached'); failed(r); assert.ok(existsSync(f.archive));
+      assert.ok(!trace.slice(at + 1).some(e => e.method), 'no later HTTP after switch');
+      assert.equal(readFileSync(join(f.ram, 'events.log'), 'utf8'), payload);
+    });
+  }
+  for (const nextStorage of ['yandex_disk', null, 'invalid']) it(`does not fall back after selection becomes ${nextStorage}`, t => {
+    const f = fixture(t, { changeStorageAt: 'folderLookup', nextStorage }), r = f.run(); failed(r);
+    assert.ok(f.trace().some(e => e.storageChanged)); assert.ok(!f.trace().some(e => e.kind === 'upload')); assert.ok(existsSync(f.archive));
+  });
+  for (const storagePartial of ['', 'google_drive']) it(`rejects failed reread with partial ${JSON.stringify(storagePartial)}`, t => {
+    const f = fixture(t, { changeStorageAt: 'folderLookup', unrelatedStorageChange: true, storageFaultAfterChange: true, storagePartial });
+    failed(f.run()); assert.ok(f.trace().some(e => e.storageChanged)); assert.ok(f.trace().some(e => e.kind === 'storageReadFault'));
+    assert.ok(!f.trace().some(e => e.kind === 'upload')); assert.ok(existsSync(f.archive));
+  });
+  it('does not infer an absent selection from an unsuccessful configuration read', t => {
+    const f = fixture(t, { noStorage: true, storageShowFault: true }), r = f.run(); failed(r);
+    assert.equal(JSON.parse(r.stdout).error, 'storage_unavailable'); assert.ok(f.trace().some(e => e.kind === 'storageShowFault')); assert.ok(existsSync(f.archive));
+  });
+  it('does not cancel an upload because an unrelated global field changed', t => {
+    const f = fixture(t, { changeStorageAt: 'folderLookup', unrelatedStorageChange: true }), r = f.run(); succeeded(r);
+    assert.ok(f.trace().some(e => e.storageChanged)); assert.equal(existsSync(f.archive), false);
+  });
+  for (const [changeStorageAt, options] of [['token', { noTokenCache: true }], ['folderCreate', { emptyFolders: true }]]) {
+    it(`stops after selection changes at ${changeStorageAt}`, t => {
+      const f = fixture(t, { changeStorageAt, ...options }), r = f.run(); failed(r);
+      const trace = f.trace(), at = trace.findIndex(e => e.storageChanged); assert.ok(at >= 0);
+      assert.ok(!trace.slice(at + 1).some(e => e.method)); assert.ok(existsSync(f.archive));
+    });
+  }
+  it('does not restore already completed archives after a switch during final inventory', t => {
+    const f = fixture(t, { changeStorageAt: 'inventory' }), r = f.run(); failed(r);
+    const trace = f.trace(), at = trace.findIndex(e => e.storageChanged); assert.ok(at >= 0);
+    assert.ok(!trace.slice(at + 1).some(e => e.method)); assert.equal(existsSync(f.archive), false);
   });
 });

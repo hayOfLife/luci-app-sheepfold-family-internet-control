@@ -3,6 +3,8 @@
  * are recording models; files, tar, cmp and flock are native (Windows lock is a
  * declared stub). Proves quota input and command-wide settings consistency, not
  * DAV XML/quota arithmetic, real accounts, native libuci or distributed rollback.
+ * r323: смена выбранного backend и отказ повторного чтения останавливают sender;
+ * несвязанный global.block_all не отменяет отправку. Проверяется точка изменения.
  * Fault/mutation assertions require trace evidence. All synthetic data is removed.
  */
 import assert from 'node:assert/strict';
@@ -36,7 +38,7 @@ function fixture(t, options = {}) {
   if (Object.hasOwn(options, 'quota')) cloud.quota_mb = options.quota;
   if (options.noQuota) delete cloud.quota_mb;
   const statePath = join(root, 'state.json'), optionsPath = join(root, 'options.json'), tracePath = join(root, 'trace.jsonl');
-  writeFileSync(statePath, JSON.stringify({ cloud, files: {}, counters: {}, mutated: false }));
+  writeFileSync(statePath, JSON.stringify({ cloud, storage: options.storage ?? 'yandex_disk', files: {}, counters: {}, mutated: false }));
   writeFileSync(optionsPath, JSON.stringify(options)); writeFileSync(tracePath, '');
   const text = readFileSync(join(process.env.SHEEPFOLD_YANDEX_TEST_SOURCE || runtime, 'sheepfold-yandex-disk'), 'utf8');
   const sourceDigest = createHash('sha256').update(text).digest('hex');
@@ -55,7 +57,11 @@ def record(**event):
 def save():statePath.write_text(json.dumps(state))
 def mutate(at):
  if state['mutated'] or opts.get('changeAt')!=at:return
- field=opts.get('changeField','password');value=opts.get('changeValue',{'password':'synthetic-new-password','login':'synthetic-new-parent','root_folder':'/new-root','quota_mb':'100'}[field]);state['cloud'][field]=value;state['mutated']=True;save();record(changeAt=at,field=field,value=value)
+ field=opts.get('changeField','password');value=opts.get('changeValue',{'password':'synthetic-new-password','login':'synthetic-new-parent','root_folder':'/new-root','quota_mb':'100','log_storage':'ram','block_all':'1'}[field])
+ if field=='log_storage':state['storage']=value
+ elif field=='block_all':state['block_all']=value
+ else:state['cloud'][field]=value
+ state['mutated']=True;save();record(changeAt=at,field=field,value=value)
 def fail(name):record(fault=name);sys.exit(9)
 if kind=='uci':
  a=[v for v in args if v!='-q'];record(args=a)
@@ -69,7 +75,10 @@ if kind=='uci':
   sys.exit(0)
  if a[0]=='get':
   key=a[1]
-  if key=='sheepfold.global.log_storage':print(opts.get('storage','yandex_disk'),end='');sys.exit(0)
+  if key=='sheepfold.global.log_storage':
+   if opts.get('storageFaultAfterMutation') and state['mutated']:print(opts.get('storagePartial',''),end='');fail('storage-read')
+   if state['storage'] is None:sys.exit(1)
+   print(state['storage'],end='');sys.exit(0)
   if key.startswith('sheepfold.cloud.'):
    field=key.split('.')[-1]
    if field=='quota_mb' and opts.get('quotaFault'):print(opts.get('partial',''),end='');fail('quota-read')
@@ -203,5 +212,49 @@ describe('Yandex command-wide destination context', () => {
   });
   it('a confirmed absent journal remains a skip', t => {
     const f = fixture(t, { showFault: true }), r = f.run('push-events'); assert.equal(r.status, 0); assert.equal(r.stdout, ''); assert.equal(requests(f).length, 0);
+  });
+});
+
+// HTTP-модель меняет только global.log_storage; cloud-реквизиты остаются прежними.
+describe('Yandex selected storage boundary', () => {
+  for (const changeAt of ['probe', 'mkcol-first', 'mkcol-last', 'put-first', 'head-first']) {
+    it(`stops archive when storage becomes RAM at ${changeAt}`, t => {
+      const f = fixture(t, { changeAt, changeField: 'log_storage' }), r = f.run();
+      assert.ok(f.saved().mutated, 'mutation reached'); assert.notEqual(r.status, 0);
+      assert.equal(parsed(r).ok, false); assert.ok(f.archives.every(existsSync));
+      const events = f.events(), at = events.findIndex(e => e.changeAt === changeAt);
+      assert.ok(!events.slice(at + 1).some(e => e.method), 'no later HTTP after backend switch');
+      assert.equal(f.saved().storage, 'ram');
+      assert.equal(JSON.parse(readFileSync(join(f.ram, '.yandex-sync-status.json'), 'utf8')).ok, false);
+    });
+  }
+  for (const changeValue of ['google_drive', null, 'invalid']) it(`does not fall back after storage becomes ${changeValue}`, t => {
+    const f = fixture(t, { changeAt: 'mkcol-last', changeField: 'log_storage', changeValue }), r = f.run();
+    assert.ok(f.saved().mutated); assert.notEqual(r.status, 0); assert.ok(f.archives.every(existsSync));
+    assert.ok(!requests(f).some(e => e.method === 'PUT')); assert.equal(f.saved().storage, changeValue);
+  });
+  for (const changeAt of ['mkcol-first', 'put-first', 'head-first']) it(`stops journal sender after backend switch at ${changeAt}`, t => {
+    const f = fixture(t, { events: true, changeAt, changeField: 'log_storage' }), r = f.run('push-events');
+    assert.ok(f.saved().mutated); assert.notEqual(r.status, 0); assert.equal(parsed(r).ok, false);
+    const events = f.events(), at = events.findIndex(e => e.changeAt === changeAt);
+    assert.ok(!events.slice(at + 1).some(e => e.method));
+    assert.equal(readFileSync(join(f.ram, 'events.log'), 'utf8'), 'synthetic journal\n');
+  });
+  for (const storagePartial of ['', 'yandex_disk']) it(`rejects failed selection reread with partial ${JSON.stringify(storagePartial)}`, t => {
+    const f = fixture(t, { changeAt: 'mkcol-last', changeField: 'block_all', storageFaultAfterMutation: true, storagePartial }), r = f.run();
+    assert.ok(f.saved().mutated); assert.ok(f.events().some(e => e.fault === 'storage-read'));
+    assert.notEqual(r.status, 0); assert.ok(f.archives.every(existsSync)); assert.ok(!requests(f).some(e => e.method === 'PUT'));
+  });
+  it('does not treat an unrelated global setting as a backend switch', t => {
+    const f = fixture(t, { changeAt: 'mkcol-last', changeField: 'block_all' }), r = f.run();
+    assert.ok(f.saved().mutated); assert.equal(f.saved().block_all, '1'); assert.equal(r.status, 0, r.stderr);
+    assert.equal(parsed(r).ok, true); assert.ok(f.archives.every(p => !existsSync(p)));
+  });
+  it('does not promise rollback for archives completed before a late backend switch', t => {
+    const f = fixture(t, { changeAt: 'head-final', changeField: 'log_storage' }), r = f.run();
+    assert.ok(f.saved().mutated); assert.notEqual(r.status, 0); assert.equal(parsed(r).ok, false);
+    assert.ok(f.archives.every(p => !existsSync(p)), 'previous completed transfers are not restored');
+    const events = f.events(), at = events.findIndex(e => e.changeAt === 'head-final');
+    assert.ok(!events.slice(at + 1).some(e => e.method));
   });
 });

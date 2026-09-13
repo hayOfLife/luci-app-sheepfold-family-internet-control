@@ -456,3 +456,8 @@ Yandex command context/quota (r322, B128–B129): `tests/yandexContextRuntime.te
 `sheepfold-yandex-disk`, [протокол](../audit-fixes-r322.ru.md). `§ydav001` включает
 проверенный reader настроенной квоты и наследуемый cloud-контекст отправителя.
 Это не XML/usage/prune, не snapshot глобального backend и не транзакция WebDAV.
+
+Cloud sender selection (r323, B130–B131): `tests/yandexContextRuntime.test.mjs`,
+`tests/googleDriveUploadRuntime.test.mjs`, оба cloud-экспортёра и
+[протокол](../audit-fixes-r323.ru.md). Существующие storage/`§ydav001`-связи
+охватывают отзыв выбранного backend, но не общий откат или нативную UCI-транзакцию.

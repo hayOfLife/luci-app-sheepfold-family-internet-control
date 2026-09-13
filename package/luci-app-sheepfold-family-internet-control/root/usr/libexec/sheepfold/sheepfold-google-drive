@@ -18,6 +18,7 @@ DOWNLOAD_ROOT="/tmp"
 DRIVE_CONTEXT_KEY=''
 DRIVE_CONTEXT_ROOT=''
 DRIVE_CONTEXT_SNAPSHOT=''
+senderStoragePinned=0
 
 uci_get() {
 	uci -q get "sheepfold.gdrive.$1" 2>/dev/null || printf '%s' "${2:-}"
@@ -26,6 +27,28 @@ uci_get() {
 global_get() {
 	uci -q get "sheepfold.global.$1" 2>/dev/null || printf '%s' "${2:-}"
 }
+
+# Только sender требует выбранного backend. Прямые list/download/verify не
+# становятся фоновой отправкой и не наследуют её запрет по log_storage.
+drive_sender_run() (
+	# Ошибка get, включая его частичный stdout, не означает выбора RAM. Default
+	# допустим только когда успешное show подтвердило отсутствие настройки.
+	if ! selected="$(uci -q get sheepfold.global.log_storage 2>/dev/null)"; then
+		settings="$(uci -q show sheepfold.global 2>/dev/null)" || {
+			printf '{"ok":false,"error":"storage_unavailable"}\n'; exit 1;
+		}
+		case "
+$settings" in *'
+sheepfold.global.log_storage='*)
+			printf '{"ok":false,"error":"storage_unavailable"}\n'; exit 1 ;;
+		esac
+		selected=ram
+	fi
+	[ "$selected" = google_drive ] || exit 0
+	senderStoragePinned=1
+	# Не помещаем cmd в if/||: это поменяло бы set -e внутри старых функций.
+	"$1"
+)
 
 json_escape() {
 	printf '%s' "$1" | tr '\r\n\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -146,7 +169,13 @@ drive_folder_context_key() (
 # Вложенные вызовы наследуют один снимок, а не начинают новую операцию после
 # замеченной смены аккаунта. Это обнаружение изменений, не UCI-транзакция.
 drive_context_check() {
-	local current
+	local current selected
+	# Дальнейшая передача требует всё ещё выбранного Google Drive. Не сравниваем
+	# весь global: несвязанный черновик родителя не меняет согласие на sender.
+	if [ "$senderStoragePinned" = 1 ]; then
+		selected="$(uci -q get sheepfold.global.log_storage 2>/dev/null)" || return 1
+		[ "$selected" = google_drive ] || return 1
+	fi
 	[ -n "$DRIVE_CONTEXT_KEY" ] || return 0
 	current="$(uci -q show sheepfold.gdrive)" || return 1
 	[ "$current" = "$DRIVE_CONTEXT_SNAPSHOT" ]
@@ -154,6 +183,7 @@ drive_context_check() {
 
 drive_context_begin() {
 	local auth_snapshot client_id client_secret refresh_token root_name context_key
+	drive_context_check || return 1
 	if [ -n "$DRIVE_CONTEXT_KEY" ]; then
 		drive_context_check
 		return $?
@@ -1485,7 +1515,6 @@ drive_events_snapshot() (
 cmd_push_events() (
 	local logs_id verify_json work snapshot_status
 
-	[ "$(global_get log_storage ram)" = "google_drive" ] || return 0
 	umask 077
 	work="$(drive_workdir)" || {
 		printf '{"ok":false,"error":"events_snapshot_failed"}\n'
@@ -1525,7 +1554,6 @@ cmd_push_events() (
 
 cmd_archive_push() (
 	local logs_id backups_id quota quota_bytes pushed errors archive events_copy backup_file work stamp snapshot_status
-	[ "$(global_get log_storage ram)" = "google_drive" ] || return 0
 	# Старый флаг authorized не доказывает текущий доступ и не является
 	# согласием на загрузку. Его задаёт log_storage; токен проверит поиск папок.
 	require_tooling || return 1
@@ -1624,8 +1652,8 @@ case "$command_name" in
 	restore-config) cmd_restore_config "$1" ;;
 	sync-status) cmd_sync_status ;;
 	verify) verify_upload "$1" "$2" ;;
-	push-events) cmd_push_events ;;
-	archive-push) cmd_archive_push ;;
+	push-events) drive_sender_run cmd_push_events ;;
+	archive-push) drive_sender_run cmd_archive_push ;;
 	*)
 		echo "Usage: sheepfold-google-drive <status|test|list|download|restore-config|sync-status|verify|push-events|archive-push>" >&2
 		exit 1
