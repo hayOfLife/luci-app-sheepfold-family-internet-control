@@ -451,3 +451,8 @@ Yandex configured journal snapshot (r319, B119–B121): `tests/yandexEventsRunti
 и существующего контракта `§logio1` выбранный файл копируется под общим writer-lock;
 сеть lock не удерживает. Никаких новых фоновых сборщиков, правил доступа или
 гарантии работы настоящего облака. Карта direct consumers обновлена.
+
+Yandex command context/quota (r322, B128–B129): `tests/yandexContextRuntime.test.mjs`,
+`sheepfold-yandex-disk`, [протокол](../audit-fixes-r322.ru.md). `§ydav001` включает
+проверенный reader настроенной квоты и наследуемый cloud-контекст отправителя.
+Это не XML/usage/prune, не snapshot глобального backend и не транзакция WebDAV.

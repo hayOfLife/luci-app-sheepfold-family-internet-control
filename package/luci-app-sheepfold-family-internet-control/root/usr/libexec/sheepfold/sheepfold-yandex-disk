@@ -26,13 +26,16 @@ have_curl() {
 }
 
 credentials_ready() {
+	yandex_transfer_settings_ok || return 1
 	# Частичный вывод неуспешного UCI не является реквизитами для сети.
 	login="$(uci -q get sheepfold.cloud.login 2>/dev/null)" || return 1
 	password="$(uci -q get sheepfold.cloud.password 2>/dev/null)" || return 1
-	[ -n "$login" ] && [ -n "$password" ]
+	[ -n "$login" ] && [ -n "$password" ] || return 1
+	yandex_transfer_settings_ok
 }
 
 normalize_root_folder() (
+	yandex_transfer_settings_ok || return 1
 	# Отказ get не означает отсутствия настройки и не разрешает выбрать другое
 	# облачное назначение. Сверка замечает изменение между чтениями, не заменяя
 	# общую транзакцию UCI. Subshell не меняет переменные вызывающего обработчика.
@@ -52,16 +55,26 @@ sheepfold.cloud.root_folder='*) return 1 ;; esac
 	folder="${folder%/}"
 	[ -n "$folder" ] || folder="/sheepfold"
 	webdav_url "$folder" >/dev/null || return 1
+	yandex_transfer_settings_ok || return 1
 	printf '%s' "$folder"
 )
 
-quota_mb() {
-	quota="$(uci_get quota_mb '500')"
-	case "$quota" in
-		50|100|250|500|1024) printf '%s' "$quota" ;;
-		*) printf '500' ;;
-	esac
-}
+quota_mb() (
+	# Default допустим только после подтверждения отсутствия опции. Сбой get
+	# не разрешает увеличить пользовательскую квоту, а частичный вывод не число.
+	snapshot="$(uci -q show sheepfold.cloud 2>/dev/null)" || return 1
+	if ! quota="$(uci -q get sheepfold.cloud.quota_mb 2>/dev/null)"; then
+		case "
+$snapshot" in *'
+sheepfold.cloud.quota_mb='*) return 1 ;; esac
+		quota=500
+	fi
+	case "$quota" in 50|100|250|500|1024) ;; *) return 1 ;; esac
+	current="$(uci -q show sheepfold.cloud 2>/dev/null)" || return 1
+	[ "$current" = "$snapshot" ] || return 1
+	yandex_transfer_settings_ok || return 1
+	printf '%s' "$quota"
+)
 
 # Вход — логический путь из настройки/имени файла, а не уже готовый URI.
 # Кодируем байты ровно один раз: «%2F» в имени означает буквальное %2F, не «/».
@@ -113,6 +126,7 @@ webdav_request() (
 	case "$reply" in *"$separator"*) ;; *) return 1 ;; esac
 	httpCode="${reply##*"$separator"}"
 	[ "$httpCode" = '207' ] || return 1
+	yandex_transfer_settings_ok || return 1
 	printf '%s' "${reply%"$separator"*}"
 )
 
@@ -122,6 +136,7 @@ webdav_probe() (
 	credentials_ready || return 1
 	httpCode="$(curl -q -g -sS -m 30 --proto '=https' -o /dev/null -w '%{http_code}' \
 		-u "$login:$password" -X PROPFIND -H 'Depth: 0' --url "$WEBDAV_BASE/")" || return 1
+	yandex_transfer_settings_ok || return 1
 	case "$httpCode" in [1-5][0-9][0-9]) printf '%s' "$httpCode" ;; *) return 1 ;; esac
 )
 
@@ -157,6 +172,7 @@ ensure_webdav_path() (
 		[ -n "$part" ] || continue
 		current="${current}/${part}"
 		url="$(webdav_url "$current")" || return 1
+		yandex_transfer_settings_ok || return 1
 		# Проверяем exit отдельно от stdout. Не следуем redirect и не читаем
 		# curlrc; MKCOL получает ровно один явный URL с сохранённым TLS.
 		code="$(curl -q -g -sS -m 30 --proto '=https' -o /dev/null -w '%{http_code}' \
@@ -168,6 +184,7 @@ ensure_webdav_path() (
 			405) ;;
 			*) return 1 ;;
 		esac
+		yandex_transfer_settings_ok || return 1
 	done
 )
 
@@ -257,8 +274,18 @@ yandex_file_bytes() (
 	'
 )
 
-# Ограниченная сверка одного PUT/HEAD-прохода. Это не блокировка UCI и не
-# снимок всей архивной команды; она не разрешает смешивать замеченные настройки.
+# Вложенная загрузка наследует исходный контекст команды, не начинает новую
+# операцию с другим аккаунтом и уже вычисленным старым remote_path. Прямой вызов
+# uploader по-прежнему сам создаёт контекст. Это сверка, не блокировка UCI.
+yandex_transfer_begin() {
+	if [ "${transferPinned:-0}" = 1 ]; then
+		yandex_transfer_settings_ok
+	else
+		transferSettings="$(uci -q show sheepfold.cloud 2>/dev/null)" || return 1
+		transferPinned=1
+	fi
+}
+
 yandex_transfer_settings_ok() (
 	[ "${transferPinned:-0}" = 1 ] || exit 0
 	current="$(uci -q show sheepfold.cloud 2>/dev/null)" || exit 1
@@ -480,10 +507,7 @@ upload_and_verify() (
 		yandex_transfer_error local_missing; exit 1;
 	}
 	webdav_url "$remote_path" >/dev/null || { yandex_transfer_error path_not_allowed; exit 1; }
-	transferSettings="$(uci -q show sheepfold.cloud 2>/dev/null)" || {
-		yandex_transfer_error settings_unavailable; exit 1;
-	}
-	transferPinned=1
+	yandex_transfer_begin || { yandex_transfer_error settings_unavailable; exit 1; }
 	# Архив удаляется caller после успеха. Отправляем неизменяемую копию и
 	# не подтверждаем удаление, если источник изменился во время HTTP.
 	work="$(yandex_transfer_workdir)" || { yandex_transfer_error snapshot_failed; exit 1; }
@@ -849,7 +873,12 @@ cmd_status() {
 	state="error"
 	message="Yandex Disk is not configured"
 	used_mb=0
-	quota="$(quota_mb)"
+	if ! quota="$(quota_mb)"; then
+		# Неизвестная квота — не 500 MB и не 100% свободного места. Поля остаются
+		# числовыми для старого UI; state/error обозначает недоступность значения.
+		printf '{"backend":"yandex_disk","state":"error","message":"Could not read storage quota.","authorized":0,"used_mb":0,"quota_mb":0,"free_pct":0}\n'
+		return 0
+	fi
 	free_pct=100
 
 	if [ "$(global_get log_storage ram)" != "yandex_disk" ]; then
@@ -930,6 +959,7 @@ cmd_status() {
 
 prune_remote_logs() {
 	local url
+	yandex_transfer_settings_ok || return 1
 	root="$1"
 	quota_bytes="$2"
 	used_bytes="$(folder_used_bytes "$root" 2>/dev/null || printf 0)"
@@ -943,6 +973,7 @@ prune_remote_logs() {
 		# двойного кодирования URI; полный проверяемый XML-reader остаётся R15.
 		case "$href" in *%*) return 1 ;; esac
 		url="$(webdav_url "$href")" || return 1
+		yandex_transfer_settings_ok || return 1
 		curl -sS -m 30 -o /dev/null -u "$(uci_get login):$(uci_get password)" \
 			-X DELETE "$url" >/dev/null 2>&1 || true
 		used_bytes="$(folder_used_bytes "$root" 2>/dev/null || printf 0)"
@@ -997,6 +1028,7 @@ cmd_push_events() (
 			printf '{"ok":false,"error":"events_snapshot_failed"}\n'
 			return 1 ;;
 	esac
+	yandex_transfer_begin || { yandex_transfer_error settings_unavailable; return 1; }
 	require_tooling || return 1
 
 	root="$(normalize_root_folder)" || {
@@ -1024,6 +1056,7 @@ cmd_push_events() (
 )
 
 cmd_archive_push() (
+	yandex_transfer_begin || { yandex_transfer_error settings_unavailable; return 1; }
 	require_tooling || return 1
 	# Просмотр больше не записывает authorized. Явная отправка проверяет доступ
 	# сейчас, а не полагается на исторический флаг и не сохраняет чужой UCI.
@@ -1033,7 +1066,8 @@ cmd_archive_push() (
 		printf '{"ok":false,"error":"root_unavailable"}\n'
 		return 1
 	}
-	quota_bytes=$(( $(quota_mb) * 1024 * 1024 ))
+	quota="$(quota_mb)" || { yandex_transfer_error quota_unavailable; return 1; }
+	quota_bytes=$((quota * 1024 * 1024))
 	# Подготовка всех обязательных локальных копий предшествует MKCOL/PUT и
 	# удалению отправленных RAM-архивов. Сбой tar не означает «копия не нужна».
 	umask 077
@@ -1071,8 +1105,10 @@ cmd_archive_push() (
 
 	for archive in "$RAM_ARCHIVE_DIR"/*.tar.gz "$RAM_ARCHIVE_DIR"/*.tar; do
 		[ -f "$archive" ] || continue
+		yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; return 1; }
 		remote="${root}/logs/$(basename "$archive")"
 		if upload_and_verify "$archive" "$remote" >/dev/null 2>&1; then
+			yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; return 1; }
 			rm -f "$archive"
 			pushed=$((pushed + 1))
 		else
@@ -1080,6 +1116,7 @@ cmd_archive_push() (
 		fi
 	done
 
+	yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; return 1; }
 	if [ -n "$events_copy" ]; then
 		remote="${root}/logs/$(basename "$events_copy")"
 		if upload_and_verify "$events_copy" "$remote" >/dev/null 2>&1; then
@@ -1089,6 +1126,7 @@ cmd_archive_push() (
 		fi
 	fi
 
+	yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; return 1; }
 	remote="${root}/backups/$(basename "$backup_file")"
 	if upload_and_verify "$backup_file" "$remote" >/dev/null 2>&1; then
 		pushed=$((pushed + 1))
@@ -1096,7 +1134,11 @@ cmd_archive_push() (
 		errors=$((errors + 1))
 	fi
 
+	yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; return 1; }
 	prune_remote_logs "$root" "$quota_bytes" || true
+	# Старые ошибки XML/prune остаются отдельными. Но подавление их exit не
+	# разрешает подтвердить команду после замеченной смены её назначения.
+	yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; return 1; }
 
 	if [ "$errors" -gt 0 ]; then
 		printf '{"ok":false,"pushed":%d,"errors":%d}\n' "$pushed" "$errors"

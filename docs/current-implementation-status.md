@@ -1,5 +1,17 @@
 # Current Implementation Status
 
+Focused continuation: 2026-09-13, **r322**, based on `2754677` (r321).
+B128–B129 validate the configured Yandex quota and preserve one cloud-settings
+context throughout each archive/events command. Nested uploaders no longer reset
+that context to new credentials while keeping an earlier destination. Detected
+changes stop subsequent requests and unconfirmed source deletion, not already
+completed operations. See the [129-card register](bug-register.ru.md) and
+[r322 report](audit-fixes-r322.ru.md). HTTP/UCI remain models; native router, Yandex,
+XML/usage/prune, global backend changes and concurrent transaction guarantees are
+not covered. Android, access policy and CI/runner production code are unchanged.
+
+Historical continuations (not fresh evidence for this snapshot):
+
 Focused continuation: 2026-09-12, **r319**, based on `ea0d1db` (r318).
 B119–B121 repair the Yandex push-events entry and export the configured journal
 through a private snapshot under the shared log lock. The lock is released before

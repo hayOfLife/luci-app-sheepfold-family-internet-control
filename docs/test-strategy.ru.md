@@ -946,3 +946,19 @@ suite, Android и несвязанные writers не требуются для 
 Loopback HTTPS-стенд с настоящим curl приложен к доказательствам, не использует
 аккаунт Яндекса и не отключает TLS. Команды и ограничения —
 [отчёт r321](audit-fixes-r321.ru.md).
+
+## Квота и общий контекст отправителя Яндекс Диска: r322
+
+`yandexContextRuntime.test.mjs` исполняет полный CLI с двумя настоящими локальными
+архивами и настоящей подготовкой config; UCI/HTTP представлены моделями. 42 сценария
+проверяют quota-reader и вложенный контекст на определённых границах запросов;
+каждый отказ/смена обязан оставить trace. Реальные аккаунты и router не используются.
+Прежняя r321 сравнивается без поправок исходника. Поздний сценарий намеренно не
+требует восстановления уже удалённых ранее подтверждённых архивов.
+
+Область: этот файл, direct consumers изменённых credentials/root/probe/MKCOL/PUT
+helpers (`yandexDiskRuntime`, `yandexUploadRuntime`, `yandexBackupRuntime`,
+`yandexEventsRuntime`, `yandexSyncRuntime`, `yandexDownloadRuntime`), dispatcher,
+writer, package hardening/IPK и карта отбора. Несвязанные Android/firewall не нужны.
+Полный suite не требуется по факту нового коммита. Повторение и ограничения —
+[отчёт r322](audit-fixes-r322.ru.md).
