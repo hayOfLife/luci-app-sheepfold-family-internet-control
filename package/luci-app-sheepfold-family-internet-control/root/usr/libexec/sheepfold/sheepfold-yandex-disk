@@ -7,6 +7,7 @@ RAM_ARCHIVE_DIR="/tmp/sheepfold/.private/archive"
 EVENTS_LOG="/tmp/sheepfold/events.log"
 BACKUP_STAGING="/tmp/sheepfold/.yandex-backup-staging"
 SYNC_STATUS_FILE="/tmp/sheepfold/.yandex-sync-status.json"
+YANDEX_DOWNLOAD_ROOT="/tmp"
 
 uci_get() {
 	uci -q get "sheepfold.cloud.$1" 2>/dev/null || printf '%s' "${2:-}"
@@ -670,43 +671,100 @@ cmd_list() {
 		"$(json_escape "$root")" "$logs_json" "$backups_json"
 }
 
-cmd_download() {
-	local url
+# Download пишет только внутри /tmp. Префикса недостаточно: каждый компонент
+# проверяется до mkdir и перед rename, чтобы '..' и ссылки не меняли назначение.
+yandex_download_path() (
+	[ "$#" -eq 1 ] && [ -n "$1" ] && [ "${#1}" -le 4096 ] || exit 1
+	case "$1" in *[[:cntrl:]]*) exit 1 ;; esac
+	case "$1" in "$YANDEX_DOWNLOAD_ROOT"/*) ;; *) exit 1 ;; esac
+	[ -d "$YANDEX_DOWNLOAD_ROOT" ] && [ ! -L "$YANDEX_DOWNLOAD_ROOT" ] || exit 1
+	remaining="${1#"$YANDEX_DOWNLOAD_ROOT"/}"
+	current="$YANDEX_DOWNLOAD_ROOT"
+	while :; do
+		part="${remaining%%/*}"
+		case "$part" in ''|.|..) exit 1 ;; esac
+		current="$current/$part"
+		[ ! -L "$current" ] || exit 1
+		if [ "$part" = "$remaining" ]; then
+			[ ! -e "$current" ] || [ -f "$current" ] || exit 1
+			exit 0
+		fi
+		[ ! -e "$current" ] || [ -d "$current" ] || exit 1
+		remaining="${remaining#*/}"
+	done
+)
+
+cmd_download() (
+	# Subshell сохраняет параметры/cleanup caller. Проверяем явно: download
+	# вызывают и из условия, где одного set -e недостаточно для раннего отказа.
+	if [ "$#" -ne 2 ] || [ -z "${1:-}" ] || [ -z "${2:-}" ]; then
+		printf '{"ok":false,"error":"usage","hint":"download <remote> <local>"}\n'
+		exit 1
+	fi
 	remote_spec="$1"
 	local_path="$2"
-	remote_path code
-
-	require_tooling || return 1
-	[ -n "$remote_spec" ] && [ -n "$local_path" ] || {
-		printf '{"ok":false,"error":"usage","hint":"download <remote> <local>"}\n'
-		return 1
+	[ "${#remote_spec}" -le 4096 ] || { yandex_transfer_error path_not_allowed; exit 1; }
+	case "$remote_spec" in *[[:cntrl:]]*) yandex_transfer_error path_not_allowed; exit 1 ;; esac
+	yandex_download_path "$local_path" || { yandex_transfer_error local_path_not_allowed; exit 1; }
+	# Одна операция не смешивает старый путь с новыми реквизитами. Сверки
+	# замечают изменения, но не создают общую транзакцию для всех UCI writers.
+	transferSettings="$(uci -q show sheepfold.cloud 2>/dev/null)" || {
+		yandex_transfer_error settings_unavailable; exit 1;
 	}
+	transferPinned=1
+	require_tooling || exit 1
+	remote_path="$(resolve_remote_path "$remote_spec")" || {
+		yandex_transfer_error path_not_allowed; exit 1;
+	}
+	url="$(webdav_url "$remote_path")" || { yandex_transfer_error path_not_allowed; exit 1; }
+	yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; exit 1; }
+	before="$(remote_file_bytes "$remote_path")" || { yandex_transfer_error download_metadata_failed; exit 1; }
 
-	remote_path="$(resolve_remote_path "$remote_spec")" || return 1
-	url="$(webdav_url "$remote_path")" || return 1
-	case "$local_path" in
-		/tmp/*) ;;
-		*)
-			printf '{"ok":false,"error":"local_path_not_allowed"}\n'
-			return 1
-			;;
-	esac
-
-	mkdir -p "${local_path%/*}" 2>/dev/null || true
-	code="$(curl -sS -m 120 -o "$local_path" -w '%{http_code}' -u "$(uci_get login):$(uci_get password)" \
-		"$url" 2>/dev/null || printf 000)"
-	case "$code" in
-		200|201|204)
-			printf '{"ok":true,"remote":"%s","local":"%s","bytes":%s}\n' \
-				"$(json_escape "$remote_path")" "$(json_escape "$local_path")" "$(wc -c <"$local_path" | tr -d ' ')"
-			;;
-		*)
-			rm -f "$local_path"
-			printf '{"ok":false,"error":"download_failed","http":%s}\n' "$code"
-			return 1
-			;;
-	esac
-}
+	# curl не открывает прежний получатель. Временный файл рядом с ним
+	# позволяет заменить только полностью проверенные байты одной операцией.
+	umask 077
+	parent="${local_path%/*}"
+	yandex_download_path "$local_path" || { yandex_transfer_error local_path_not_allowed; exit 1; }
+	mkdir -p "$parent" || { yandex_transfer_error download_local_failed; exit 1; }
+	yandex_download_path "$local_path" || { yandex_transfer_error local_path_not_allowed; exit 1; }
+	work="$(mktemp -d "$parent/.yandex-download.XXXXXX")" || { yandex_transfer_error download_local_failed; exit 1; }
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	chmod 700 "$work" || { yandex_transfer_error download_local_failed; exit 1; }
+	: >"$work/content" || { yandex_transfer_error download_local_failed; exit 1; }
+	chmod 600 "$work/content" || { yandex_transfer_error download_local_failed; exit 1; }
+	credentials_ready || { yandex_transfer_error credentials_missing; exit 1; }
+	yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; exit 1; }
+	# 0 отключает max-filesize. Для пустого объекта допускаем не более одного
+	# байта на уровне curl, затем всё равно требуем ровно подтверждённый ноль.
+	maxBytes="$before"
+	[ "$maxBytes" != 0 ] || maxBytes=1
+	if ! code="$(curl -q -g -sS -m 120 --proto '=https' --http1.1 \
+		--max-filesize "$maxBytes" -H 'Accept-Encoding: identity' -H 'Cache-Control: no-cache' \
+		-o "$work/content" -w '%{http_code}' -u "$login:$password" --url "$url")"; then
+		printf '{"ok":false,"error":"download_failed","http":0}\n'; exit 1
+	fi
+	yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; exit 1; }
+	if [ "$code" != 200 ]; then
+		case "$code" in [1-5][0-9][0-9]) ;; *) code=0 ;; esac
+		printf '{"ok":false,"error":"download_failed","http":%s}\n' "$code"; exit 1
+	fi
+	actual="$(yandex_file_bytes "$work/content")" || { yandex_transfer_error download_local_failed; exit 1; }
+	[ "$actual" = "$before" ] || { yandex_transfer_error download_size_mismatch; exit 1; }
+	after="$(remote_file_bytes "$remote_path")" || { yandex_transfer_error download_metadata_failed; exit 1; }
+	[ "$before" = "$after" ] || { yandex_transfer_error download_remote_changed; exit 1; }
+	# Готовим JSON до публикации. Используем уже существующее экранирование,
+	# чтобы имена не менялись и ошибка encoder не следовала за заменой файла.
+	remoteJson="$(yandex_sync_quote "$remote_path")" || { yandex_transfer_error download_local_failed; exit 1; }
+	localJson="$(yandex_sync_quote "$local_path")" || { yandex_transfer_error download_local_failed; exit 1; }
+	chmod 600 "$work/content" || { yandex_transfer_error download_local_failed; exit 1; }
+	yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; exit 1; }
+	yandex_download_path "$local_path" || { yandex_transfer_error local_path_not_allowed; exit 1; }
+	# -T не превращает появившийся каталог в новое неявное назначение.
+	# Гонка с привилегированным writer после проверки остаётся отдельной задачей.
+	mv -T "$work/content" "$local_path" || { yandex_transfer_error download_local_failed; exit 1; }
+	printf '{"ok":true,"remote":"%s","local":"%s","bytes":%s}\n' "$remoteJson" "$localJson" "$actual"
+)
 
 latest_backup_name() {
 	root="$1"
@@ -1107,7 +1165,7 @@ case "$command_name" in
 	status) cmd_status ;;
 	test) cmd_test ;;
 	list) cmd_list ;;
-	download) cmd_download "$1" "$2" ;;
+	download) cmd_download "$@" ;;
 	restore-config) cmd_restore_config "$1" ;;
 	sync-status) cmd_sync_status ;;
 	verify) verify_upload "${1:-}" "${2:-}" ;;
