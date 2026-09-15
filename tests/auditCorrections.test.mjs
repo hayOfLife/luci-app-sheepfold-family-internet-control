@@ -1,3 +1,6 @@
+/* Проверяет связи модулей и точные структурные инварианты прежнего аудита.
+ * Читает исходники без изменения состояния; наличие функции не доказывает её
+ * runtime-поведение, которое отдельно проверяется профильными VM-тестами. */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -13,7 +16,7 @@ describe('post-audit corrections §ovaudit1', () => {
     assert.match(application, /features\.page\.refresh as pageRefreshModel/);
     assert.match(settings, /features\.settings\.save-flow as settingsSaveFlowModel/);
     assert.match(read('htdocs/luci-static/resources/sheepfold/features/page/refresh.js'), /function userLists\(\)/);
-    assert.match(read('htdocs/luci-static/resources/sheepfold/features/settings/save-flow.js'), /function executeSave\(\)/);
+    assert.match(read('htdocs/luci-static/resources/sheepfold/features/settings/save-flow.js'), /function executeSave\(options, savers\)/);
   });
 
   it('removes an existing DHCP host when a static lease is disabled', () => {

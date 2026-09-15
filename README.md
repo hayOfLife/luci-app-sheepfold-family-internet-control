@@ -6,6 +6,10 @@
 
 [Русский](README.ru.md) | English
 
+> Automatic cloud configuration backups are temporarily unavailable. Use the
+> safe manual export in router Settings. Journal snapshot uploads remain separate.
+> [Current limitations](docs/settings-backup.ru.md) · [Review decisions (Russian)](docs/review-r323-acceptance.ru.md).
+
 [Project presentation](docs/project-presentation.md)
 
 [Encrypted parent-app bug reports](docs/support-report-transport.ru.md) · [Legacy LuCI channel: Yandex Cloud + YDB](docs/yandex-cloud-ydb-feedback.ru.md)

@@ -163,7 +163,7 @@ describe('background maintenance jobs §maintjob1', () => {
       '',
     ].join('\n'));
     writeFileSync(uci, [
-      `sheepfold.global.log_cache_path=${log}`,
+      `sheepfold.global.log_cache_path=${fixturePath(log)}`,
       'sheepfold.global.log_retention=3d',
       'sheepfold.global.log_max_size_kb=64',
     ].join('\n') + '\n');

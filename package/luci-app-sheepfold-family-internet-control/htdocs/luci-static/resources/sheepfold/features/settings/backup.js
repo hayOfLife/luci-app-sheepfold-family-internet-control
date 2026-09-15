@@ -8,6 +8,7 @@ var secretPlaceholder = '[secret]';
 var maxSectionsPerConfig = 1024;
 var maxOptionsPerSection = 256;
 var maxValueLength = 131072;
+var maxFileBytes = 5 * 1024 * 1024;
 var pbkdf2Iterations = 250000;
 var routerIdOption = 'router_install_id';
 var transferDeviceOptions = {
@@ -36,7 +37,10 @@ var transferDeviceOptions = {
 };
 
 function secretOption(name) {
-	return /(password|passwd|token|secret|key|cookie|session|sim_phone_history)/i.test(String(name || ''));
+	// WPS PIN и списки ключей 802.11r не содержат слов password/key в имени.
+	// Точные имена дополняют общий фильтр без маскирования pinning_enabled и т. п.
+	return /(password|passwd|token|secret|key|cookie|session|sim_phone_history)/i.test(String(name || '')) ||
+		/^(wps_pin|r0kh|r1kh)$/i.test(String(name || ''));
 }
 
 function transientOption(name) {
@@ -278,6 +282,15 @@ function summary(payload) {
 	};
 }
 
+// Проверяем именно скачиваемый UTF-8 JSON: шифрованная оболочка с Base64
+// может превышать лимит, даже когда исходная конфигурация в него помещается.
+function fileText(payload) {
+	var text = JSON.stringify(payload, null, 2) + '\n';
+	if (new TextEncoder().encode(text).length > maxFileBytes)
+		throw new Error('backup_file_too_large');
+	return text;
+}
+
 function bytesToBase64(bytes) {
 	var binary = '';
 	var chunkSize = 32768;
@@ -375,6 +388,8 @@ return baseclass.extend({
 	plainFormat: plainFormat,
 	encryptedFormat: encryptedFormat,
 	secretPlaceholder: secretPlaceholder,
+	maxFileBytes: maxFileBytes,
+	fileText: fileText,
 	secretOption: secretOption,
 	transientOption: transientOption,
 	build: build,

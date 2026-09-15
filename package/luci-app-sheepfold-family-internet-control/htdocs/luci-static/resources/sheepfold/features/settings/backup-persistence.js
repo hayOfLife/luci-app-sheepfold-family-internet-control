@@ -68,10 +68,38 @@ function create(deps) {
 		stageConfig('wireless', payload.configs.wireless, previousPayload.configs.wireless, ['wifi-device', 'wifi-iface'], payload.containsSecrets);
 	}
 
+	function configFingerprint(payload) {
+		// Порядок UCI-секций/списков значим, порядок ключей JS-объекта — нет.
+		return JSON.stringify(configs.map(function (config) {
+			return payload.configs[config].map(function (section) {
+				return [section.name, section.type, Object.keys(section.options).sort().map(function (option) {
+					return [option, section.options[option]];
+				})];
+			});
+		}));
+	}
+
+	function currentPayload() {
+		return deps.model.validate(deps.model.build({
+			sheepfold: deps.persistence.sections('sheepfold'),
+			dhcp: deps.persistence.sections('dhcp').filter(function (section) { return section['.type'] === 'host'; }),
+			wireless: deps.persistence.sections('wireless').filter(function (section) {
+				return section['.type'] === 'wifi-device' || section['.type'] === 'wifi-iface';
+			})
+		}, true));
+	}
+
 	function apply(payload, previousPayload) {
 		var previous = deps.model.validate(previousPayload);
 		var prepared = deps.model.prepareRestore(payload, previous);
 		return deps.persistence.mutate(configs, function () {
+			// Controller получает previous до ожидания общей очереди. Предыдущая
+			// операция могла сменить секрет/ID: старый [secret] нельзя вернуть назад.
+			if (configFingerprint(currentPayload()) !== configFingerprint(previous)) {
+				var conflict = new Error('backup_current_settings_changed');
+				conflict.errorCode = 'backup_current_settings_changed';
+				throw conflict;
+			}
 			stagePayload(prepared.payload, previous);
 			return { routerTransfer: prepared.routerTransfer };
 		}).then(function (mutation) {

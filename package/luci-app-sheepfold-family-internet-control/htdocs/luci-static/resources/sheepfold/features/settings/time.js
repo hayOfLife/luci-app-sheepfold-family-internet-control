@@ -67,6 +67,32 @@ function optionNode(item, selected) {
 	}, item[1] === 'UTC' ? 'UTC' : _(item[1]) + ' (' + item[2] + ')');
 }
 
+// commandActions.run отклоняет ненулевой exit до then. Только штатный
+// post-commit отказ NTP подтверждает запись; timeout этого не доказывает.
+function normalizeSaveError(error, parseKeyValues) {
+	var result = error && error.result;
+	var outcome = parseKeyValues(result && result.stdout || '');
+	if (result && result.code === 5 && outcome.status === 'error' &&
+		outcome.error === 'ntp_restart_failed' && outcome.persisted === '1' && outcome.runtime_applied === '0') {
+		error.persisted = true;
+		error.runtimeApplied = false;
+		error.errorCode = 'ntp_restart_failed';
+		error.message = _('Router time settings were saved, but NTP could not be restarted. Check the time service before relying on schedules.');
+	}
+	// Неполное файловое восстановление не подтверждает ни старые, ни новые
+	// настройки. Не принимаем черновик и не предлагаем автоматический повтор.
+	if (result && result.code === 6 && outcome.status === 'error' &&
+		outcome.error === 'time_rollback_failed' && outcome.config_files_restored === '0' && outcome.recovery_required === '1') {
+		error.errorCode = 'time_rollback_failed';
+		error.message = _('Router time settings could not be restored completely. Check the router configuration and recovery snapshots before saving again.');
+	}
+	if (result && result.code === 4 && outcome.status === 'error' && outcome.error === 'time_clock_unavailable') {
+		error.errorCode = 'time_clock_unavailable';
+		error.message = _('Could not read the router clock. Time settings were not changed. Check the router before trying again.');
+	}
+	return error;
+}
+
 function create(deps) {
 	var selectedCountry = deps.countryProfile();
 	var recommendationText = null;
@@ -108,6 +134,7 @@ function create(deps) {
 		var stateNote = E('div', { 'class': systemConfigured ? 'sf-note sf-note-ok' : 'sf-note sf-note-warning' });
 		var clockNote = E('div', { 'class': 'sf-note sf-note-warning', 'hidden': 'hidden' });
 		var initialOptions;
+		var savedOptions = null;
 
 		if (!knownSelected && selectedTimezone.indexOf('|') > 0)
 			currentOptions.unshift([selectedTimezone, 'Current router timezone', selectedTimezone.replace('|', ', ')]);
@@ -176,12 +203,29 @@ function create(deps) {
 			},
 			save: function () {
 				var options = collectOptions();
+				savedOptions = null;
 				if (!options.timezone_name || !options.timezone || !options.servers)
 					return Promise.reject(new Error(_('Choose a timezone and at least one valid NTP server.')));
-				return deps.save(options);
+				return Promise.resolve().then(function () {
+					return deps.save(options);
+				}).then(function (result) {
+					savedOptions = options;
+					return result;
+				}, function (error) {
+					// Отказ перезапуска не отменяет подтверждённую запись. Но до её
+					// подтверждения ни один текущий ввод нельзя считать сохранённым.
+					if (error && error.persisted === true)
+						savedOptions = options;
+					throw error;
+				});
 			},
 			accept: function () {
-				initialOptions = collectOptions();
+				if (!savedOptions)
+					return;
+				// Ответ относится к отправленному снимку, не к полям, которые
+				// родитель успел изменить, пока ожидал сохранения времени.
+				initialOptions = savedOptions;
+				savedOptions = null;
 				systemConfigured = true;
 				updateStateNote();
 			}
@@ -255,6 +299,7 @@ function create(deps) {
 }
 
 return baseclass.extend({
+	normalizeSaveError: normalizeSaveError,
 	countryProfile: countryProfile,
 	normalizeNtpServers: normalizeNtpServers,
 	timezoneOptions: timezoneOptions,

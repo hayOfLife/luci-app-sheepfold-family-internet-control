@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { shellTestPath } from '../tools/quality/testEnvironment.mjs';
+import { runtimeTimeout } from './helpers/runtimeProcess.mjs';
 const repo = resolve(import.meta.dirname, '..');
 const runtime = join(repo, 'package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold');
 const posix = process.platform !== 'win32';
@@ -19,7 +20,7 @@ function fixture(t, options = {}) {
   const root = mkdtempSync(join(parent, 'case-'));
   const bin = join(root, 'bin'), ram = join(root, 'ram'), config = join(root, 'config');
   for (const dir of [bin, ram, config]) mkdirSync(dir);
-  const path = value => shellTestPath(value, { cwd: repo, allowedRoot: root });
+  const path = value => shellTestPath(value, { cwd: root, allowedRoot: root });
   const put = (name, data) => { writeFileSync(join(bin, name), data); chmodSync(join(bin, name), 0o755); };
   writeFileSync(join(config, 'sheepfold'), "config global 'global'\n\toption block_all '0'\n");
   if (!options.noEvents) writeFileSync(join(ram, 'events.log'), 'synthetic event\n');
@@ -48,9 +49,9 @@ function fixture(t, options = {}) {
   writeFileSync(join(root, 'tools.json'), JSON.stringify(tools));
   // Minimal native-function-shaped jshn model; never executes cache contents.
   put('jshn.sh', `json_init() { :; }
-json_get_keys() { eval "$1=\\\"\\$modelKeys\\\""; }
-json_get_type() { eval "$1=\\\"\\\${modelType_$2-}\\\""; eval '[ -n "\\\${modelType_'"$2"'-}" ]'; }
-json_get_var() { eval "$1=\\\"\\\${modelValue_$2-}\\\""; }
+json_get_keys() { eval "$1=\\"\\$modelKeys\\""; }
+json_get_type() { eval "$1=\\"\\\${modelType_$2-}\\""; eval '[ -n "\\\${modelType_'"$2"'-}" ]'; }
+json_get_var() { eval "$1=\\"\\\${modelValue_$2-}\\""; }
 `);
   if (options.noJshn) rmSync(join(bin, 'jshn.sh'));
   for (const name of ['uci', 'curl', 'jshn', ...toolNames]) put(name, `#!/bin/sh\nexec ${quote(python)} -S ${quote(path(join(bin, 'model.py')))} ${name} "$@"\n`);
@@ -128,7 +129,7 @@ sys.exit(subprocess.run([real[kind],*args]).returncode)
   const env = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', YS_OPTIONS: path(optionsFile), YS_STATE: path(stateFile), YS_TRACE: path(traceFile), YS_STATUS: path(statusFile), YS_FOREIGN: path(foreign), YS_TOOLS: path(join(root, 'tools.json')), YS_BARRIER: path(join(root, 'barrier')), YS_RELEASE: path(join(root, 'release')) };
   const results = [];
   const argsFor = (action, message = 'completed operation') => ['-c', `export PATH=${quote(path(bin))}:"$PATH"; ${action === 'write' ? `. ${quote(path(join(bin, 'library')))}; write_sync_status push-events false ${quote(message)}` : `exec sh ${quote(path(join(bin, 'sheepfold-yandex-disk')))} ${quote(action)}`}`];
-  const run = (action, message) => { const r = spawnSync('sh', argsFor(action, message), { cwd: root, env, encoding: 'utf8', timeout: 25000 }); assert.ifError(r.error); results.push({ action, status: r.status, stdout: r.stdout, stderr: r.stderr }); return r; };
+  const run = (action, message) => { const r = spawnSync('sh', argsFor(action, message), { cwd: root, env, encoding: 'utf8', timeout: runtimeTimeout(25000) }); assert.ifError(r.error); results.push({ action, status: r.status, stdout: r.stdout, stderr: r.stderr }); return r; };
   const start = (action, message) => {
     const child = spawn('sh', argsFor(action, message), { cwd: root, env, detached: posix, stdio: ['ignore', 'pipe', 'pipe'] }); let stdout = '', stderr = '';
     child.stdout.on('data', b => { stdout += b; }); child.stderr.on('data', b => { stderr += b; });
@@ -152,7 +153,7 @@ const parse = r => JSON.parse(r.stdout);
 const clean = f => assert.deepEqual(readdirSync(f.ram).filter(n => n.startsWith('.yandex-sync.')), []);
 
 describe('Yandex completed sync status', () => {
-  for (const action of ['push-events', 'archive-push']) {
+  for (const action of ['push-events']) {
     for (const [reason, options] of [['credentials', { noCredentials: true }], ['root', { rootFail: true }], ['MKCOL', { mkcolHttp: 423 }], ['work directory', { fault: 'archive-work' }], ['PUT', { putHttp: 500 }]]) {
       it(`${action} replaces old success after ${reason} failure`, t => {
         const f = fixture(t, options), r = f.run(action); assert.notEqual(r.status, 0); assert.equal(parse(r).ok, false);
@@ -178,7 +179,7 @@ describe('Yandex completed sync status', () => {
       const f = fixture(t, { storage: 'ram' }), r = f.run(action); assert.equal(r.status, 0); assert.equal(r.stdout, ''); assert.equal(f.cache(), f.initial);
     });
   }
-  for (const action of ['push-events', 'archive-push']) {
+  for (const action of ['push-events']) {
     it(`${action} treats failed storage-setting read as an error, not a skipped sync`, t => {
       const f = fixture(t, { storageFault: true }), r = f.run(action);
       assert.notEqual(r.status, 0); assert.equal(parse(r).error, 'storage_unavailable');
@@ -191,15 +192,8 @@ describe('Yandex completed sync status', () => {
       assert.ok(!f.trace().some(e => e.method));
     });
   }
-  it('archive error code 4 is not confused with the empty-journal skip', t => {
-    const f = fixture(t, { fault: 'remove-archive' }), r = f.run('archive-push');
-    assert.notEqual(r.status, 0); assert.ok(f.trace().some(e => e.fault === 'remove-archive'));
-    assert.equal(JSON.parse(f.cache()).ok, false); assert.ok(existsSync(f.archive));
-  });
-  it('archive-push records a failed authorization probe', t => {
-    const f = fixture(t, { probeHttp: 401 }), r = f.run('archive-push'); assert.notEqual(r.status, 0); assert.equal(JSON.parse(f.cache()).ok, false);
-    assert.ok(!f.trace().some(e => ['PUT', 'MKCOL', 'DELETE'].includes(e.method)));
-  });
+
+
   it('absent selected journal does not claim a new successful sync', t => {
     const f = fixture(t, { noEvents: true }), r = f.run('push-events'); assert.equal(r.status, 0); assert.equal(r.stdout, ''); assert.equal(f.cache(), f.initial);
   });

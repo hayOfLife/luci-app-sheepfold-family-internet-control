@@ -292,6 +292,7 @@ function create(deps) {
 		return enqueue(function () {
 			var cleanFingerprint;
 			var stageStarted = false;
+			var stagingConflict = false;
 			var stageResult;
 			var ownedFingerprint;
 
@@ -306,18 +307,20 @@ function create(deps) {
 				stageStarted = true;
 				value = typeof stage === 'function' ? stage() : null;
 				// У LuCI одна глобальная staging-область в памяти. Yield из stage callback
-				// позволил бы другой вкладке или callback смешать изменения до фиксации
+				// позволил бы другому callback страницы смешать изменения до фиксации
 				// отпечатка владельца, поэтому staging всегда синхронный.
 				if (value && typeof value.then === 'function')
 					throw codedError('uci_async_stage_forbidden', 'uci_async_stage_forbidden');
-				return value;
-			}).then(function (value) {
 				stageResult = value;
 				ensureOnlySelected(selected);
 				ownedFingerprint = stateSnapshot();
-				// После stage() асинхронный preflight запрещён: удалённое состояние
-				// проверено непосредственно перед staging, а локальный отпечаток
-				// владельца повторно проверяет applyOwned().
+				// Снимок владельца фиксируется до yield, иначе поздний callback
+				// будет ошибочно принят за часть явно подтверждённой операции.
+			}).then(function () {
+				if (stateSnapshot() !== ownedFingerprint) {
+					stagingConflict = true;
+					throw codedError('uci_concurrent_local_changes', 'uci_concurrent_local_changes');
+				}
 				return applyOwned(selected, ownedFingerprint);
 			}).then(function (result) {
 				result.stageResult = stageResult;
@@ -325,7 +328,9 @@ function create(deps) {
 			}).catch(function (error) {
 				// До начала своих записей нечего откатывать: unload стирает и чужой
 				// черновик, который появился во время ожидания remoteChanges().
-				if (!stageStarted || error && error.uciCleanupAttempted)
+				// После замечанного смешения unload уже не принадлежит только нам:
+				// оставляем весь черновик для проверки, не сохраняем и не стираем его.
+				if (!stageStarted || stagingConflict || error && error.uciCleanupAttempted)
 					throw error;
 				return cleanupOwned(selected, error, false);
 			});

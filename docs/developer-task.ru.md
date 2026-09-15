@@ -201,8 +201,10 @@ API `/cgi-bin/sheepfold-api/client-status` возвращает `warning_before_
 | [`docs/ai-assistant-development/README.md`](ai-assistant-development/README.md) | Архитектура будущего ИИ-помощника и карта модулей |
 - [Фоновые задания обслуживания](maintenance-jobs.ru.md) — ротация RAM-журнала, консервативная очистка offline-карточек, обычные уведомления об обновлении и явно включаемый часовой бета-режим (§maintjob1, §betatest1).
 - [Время и необязательный nmap](time-and-detection-setup.ru.md) — сохранение системного timezone, country recommendations без IP-геолокации и явная optional-tool граница (§country1, §devpas1).
+- [Сохранение времени после ревью r323](review-r323-time-lifecycle.ru.md) — точный snapshot, post-commit отказ NTP и независимая диагностика; без нового релиза (§country1, §persist1).
 - [Единый запуск LuCI-команд](luci-command-actions.ru.md) — stable action key, duplicate-click coalescing, structured errorCode и локальная перерисовка (§apicon1).
 - [Persistence-адаптеры LuCI](luci-persistence-adapters.ru.md) — UCI apply, device/DHCP/runtime, Wi-Fi reload, backup rollback и pairing (§persist1).
+- [Жизненный цикл сохранения Settings после ревью r323](review-r323-settings-lifecycle.ru.md) — поздний черновик, busy-состояние и неизменный снимок подтверждения; без нового релиза (§persist1, §ovfinal1).
 - [Финальная зачистка LuCI coordinator](luci-coordinator-cleanup.ru.md) — удалённые forwarding helpers и допустимая оставшаяся orchestration-граница (§coordclean1).
 
 ## Продолжение аудита принятой r297
@@ -221,3 +223,12 @@ API `/cgi-bin/sheepfold-api/client-status` возвращает `warning_before_
 `|| true`. Ранний отказ исходной r303 и последующие дефекты после исправления
 объявлений имеют разные уровни доказательства. Восстановление из облака,
 OAuth/квоты, native jshn и реальная доставка не подтверждены этим проходом.
+
+
+### Продолжение review-time: снимки и восстановление
+
+[B154–B156](review-r323-time-recovery.ru.md): подготовка страховочной копии до staging,
+сохранение снимков при неудачном файловом откате, точное предупреждение через LuCI,
+уборка отдельно от результата сохранения/NTP. Итог принятия B61–B159
+приведён в [отчёте r324](review-r323-acceptance.ru.md);
+общая UCI-транзакция, безопасный облачный экспорт и аппаратная проверка не завершены.

@@ -971,3 +971,47 @@ writer, package hardening/IPK и карта отбора. Несвязанные
 означает нативный UCI, живое облако или возможность отозвать уже ушедший HTTP.
 Системное sh используется для детерминированных подстановок; BusyBox syntax не
 подменяет fault-injection runtime. [Runbook r323](audit-fixes-r323.ru.md).
+
+
+## Профильный контроль messenger settings после ревью r323
+
+Для изменений панели/контроллера мессенджера использовать
+`messengerSettingsLifecycle.test.mjs` вместе с прямыми потребителями actions,
+общего saver и локализации. Проверяется настоящий шов controller → panel и
+детерминированные Promise-барьеры, не сеть Telegram. Полный runbook, перечень
+сценариев и границы — [review messenger](review-r323-messenger-lifecycle.ru.md).
+Облачная защитная группа сохраняет запрет сырого конфигурационного archive-push.
+
+
+## Время: UI → action-wrapper → helper после ревью r323
+
+`timeSettingsLifecycle.test.mjs` исполняет настоящие time/draft/save-flow, адаптер
+из application, actions и router; отдельный связанный сценарий проходит настоящий
+luci-action и time-control с аргументами UI. UCI, init/log и DOM моделируются;
+реальные часы, NTP и конфигурация хоста не меняются. Не заменять общий action-wrapper
+прямым успешным runner: его ранний reject определяет место классификации post-commit
+ошибки. Поздний ввод, code5 после записи, ошибочная диагностика и сохранённый cloud
+запрет проверяются профильно. [Команды, результаты и ограничения](review-r323-time-lifecycle.ru.md).
+
+
+## Файловое восстановление настроек времени (§country1)
+
+`timeTransactionRecovery.test.mjs` исполняет рабочий helper с моделью UCI, чьи commit
+изменяют те же реальные файлы, из которых сделаны snapshots. Проверяются подготовка,
+неполный rollback, сохранение исходных снимков, граница rename, TERM и cleanup после
+успеха. Отказы оставляют обязательный trace; реальные файлы не заменяются одним
+счётчиком вызовов. Модель не подтверждает native libuci, общую pending-очередь или
+аппаратное восстановление. Windows/native-mode/links/signals имеют явные границы.
+[Команды и результаты](review-r323-time-recovery.ru.md).
+
+
+### Review time-confirmation: readback и наследуемые значения
+
+`timeSaveConfirmation.test.mjs` проверяет 16 требуемых UCI-полей после commit,
+неуспешный get с правильным выводом, отказ delete списка, служебный timestamp до
+мутаций и реальные барьеры flock для ожидающего save. UCI — модель реальных
+файлов/частной delta; NTP, date и журнал — заменители. Python запускается с `-S`,
+так как модель использует только стандартную библиотеку; это исключает site-hooks
+окружения теста, не меняя production или бюджет процесса. Native lock-сценарии
+отмечены как POSIX-only, остальные сохраняют общий Windows-порядок fixture.
+Поведение, команды и границы — [протокол](review-r323-time-confirmation.ru.md).

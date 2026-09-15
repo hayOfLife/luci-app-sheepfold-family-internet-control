@@ -58,6 +58,16 @@ function create(onChange) {
 		changed();
 	}
 
+	function acceptOptions(saved) {
+		// Ответ относится только к переданному снимку. Более поздний ввод нельзя
+		// стирать или объявлять сохранённым вместе с завершившейся операцией.
+		Object.keys(saved || {}).forEach(function (option) {
+			if (has(option) && options[option] === saved[option])
+				delete options[option];
+		});
+		changed();
+	}
+
 	function setSaving(value) {
 		saving = !!value;
 		changed();
@@ -75,6 +85,7 @@ function create(onChange) {
 		isDirty: isDirty,
 		snapshot: snapshot,
 		clearOptions: clearOptions,
+		acceptOptions: acceptOptions,
 		setSaving: setSaving,
 		isSaving: function () { return saving; }
 	};

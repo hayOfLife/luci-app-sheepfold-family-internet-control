@@ -16,16 +16,22 @@ SYSNTPD_INIT="${SHEEPFOLD_SYSNTPD_INIT:-/etc/init.d/sysntpd}"
 LOG_HELPER="${SHEEPFOLD_LOG_HELPER:-/usr/libexec/sheepfold/sheepfold-log}"
 TRANSACTION_DIR=""
 TRANSACTION_ACTIVE=0
+SYSTEM_COMMIT_STARTED=0
+APP_COMMIT_STARTED=0
 
 log_event() {
 	local message
 	message="$*"
 	[ -z "${SHEEPFOLD_ACTION_ACTOR:-}" ] || message="${SHEEPFOLD_ACTION_ACTOR}: $message"
-	if [ -x "$LOG_HELPER" ]; then
-		"$LOG_HELPER" "$message"
-	else
-		logger -t sheepfold "$message" 2>/dev/null || true
+	# Журнал — побочное действие: его отказ/вывод не отменяет уже записанные
+	# настройки и не должен подменять машинный ответ команды time-save.
+	if [ -x "$LOG_HELPER" ] && "$LOG_HELPER" "$message" >/dev/null 2>&1; then
+		return 0
 	fi
+	if ! logger -t sheepfold "$message" >/dev/null 2>&1; then
+		printf 'Sheepfold time settings: event log unavailable.\n' >&2
+	fi
+	return 0
 }
 
 uci_get() {
@@ -97,53 +103,164 @@ print_status() {
 	printf 'recommended_servers=%s\n' "$recommended_servers"
 }
 
+# Снимок принадлежит только этой операции. Ошибка чтения существующего
+# файла не означает его отсутствия и не разрешает удалять его при откате.
 snapshot_file() {
+	local path name parent
 	path="$1"
 	name="$2"
-	if [ -r "$path" ]; then
+	parent="${path%/*}"
+	[ "$parent" != "$path" ] && [ -d "$parent" ] && [ ! -L "$parent" ] && [ -r "$parent" ] && [ -x "$parent" ] || return 1
+	[ ! -L "$path" ] || return 1
+	if [ -e "$path" ]; then
+		[ -f "$path" ] && [ -r "$path" ] || return 1
 		cp -p "$path" "$TRANSACTION_DIR/$name.before" || return 1
-		printf 'present\n' > "$TRANSACTION_DIR/$name.state"
+		cmp -s "$path" "$TRANSACTION_DIR/$name.before" || return 1
+		printf 'present\n' > "$TRANSACTION_DIR/$name.state" || return 1
 	else
-		printf 'absent\n' > "$TRANSACTION_DIR/$name.state"
+		printf 'absent\n' > "$TRANSACTION_DIR/$name.state" || return 1
 	fi
 }
 
+prepare_transaction() {
+	local created
+	umask 077
+	[ ! -L "$TRANSACTION_ROOT" ] || return 1
+	mkdir -p "$TRANSACTION_ROOT" || return 1
+	[ -d "$TRANSACTION_ROOT" ] && [ ! -L "$TRANSACTION_ROOT" ] || return 1
+	chmod 700 "$TRANSACTION_ROOT" || return 1
+	# Не присваиваем cleanup-путь из вывода неуспешного mktemp. PID может
+	# повториться, поэтому старый transaction.PID никогда не переиспользуем.
+	created="$(mktemp -d "$TRANSACTION_ROOT/transaction.XXXXXX")" || return 1
+	TRANSACTION_DIR="$created"
+	chmod 700 "$TRANSACTION_DIR" || return 1
+	UCI_SAVEDIR="$TRANSACTION_DIR/uci"
+	mkdir "$UCI_SAVEDIR" || return 1
+	snapshot_file "$SYSTEM_CONFIG" system || return 1
+	snapshot_file "$SHEEPFOLD_CONFIG" sheepfold || return 1
+}
+
 restore_file() {
+	local path name state parent staged result
 	path="$1"
 	name="$2"
-	case "$(sed -n '1p' "$TRANSACTION_DIR/$name.state" 2>/dev/null || true)" in
+	state="$(cat "$TRANSACTION_DIR/$name.state")" || return 1
+	[ ! -L "$path" ] || return 1
+	case "$state" in
 		present)
+			[ -f "$TRANSACTION_DIR/$name.before" ] && [ ! -L "$TRANSACTION_DIR/$name.before" ] || return 1
+			[ ! -e "$path" ] || [ -f "$path" ] || return 1
 			parent="${path%/*}"
-			[ "$parent" = "$path" ] || mkdir -p "$parent"
-			cp -p "$TRANSACTION_DIR/$name.before" "$path"
+			[ "$parent" != "$path" ] && [ -d "$parent" ] && [ ! -L "$parent" ] || return 1
+			staged="$(mktemp -d "$parent/.sheepfold-time-restore.XXXXXX")" || return 1
+			result=1
+			# Нельзя копировать поверх рабочего файла: частичный cp разрушит
+			# ещё одну копию. Публикуем только проверенный соседний файл.
+			if chmod 700 "$staged" &&
+			   cp -p "$TRANSACTION_DIR/$name.before" "$staged/config" &&
+			   cmp -s "$TRANSACTION_DIR/$name.before" "$staged/config" &&
+			   [ ! -L "$path" ] && { [ ! -e "$path" ] || [ -f "$path" ]; } &&
+			   mv -fT "$staged/config" "$path"; then
+				result=0
+			fi
+			rm -rf "$staged" || printf 'Sheepfold time settings: recovery temporary directory remains: %s\n' "$staged" >&2
+			return "$result"
 			;;
-		absent) rm -f "$path" ;;
+		absent)
+			[ ! -e "$path" ] || [ -f "$path" ] || return 1
+			rm -f "$path" || return 1
+			[ ! -e "$path" ] && [ ! -L "$path" ]
+			;;
 		*) return 1 ;;
 	esac
 }
 
 rollback() {
-	restore_file "$SYSTEM_CONFIG" system 2>/dev/null || true
-	restore_file "$SHEEPFOLD_CONFIG" sheepfold 2>/dev/null || true
+	local failed=0
+	# Отказ первого файла не отменяет попытку восстановить второй. Только
+	# общий успех разрешает удалить исходные страховочные снимки.
+	if [ "$SYSTEM_COMMIT_STARTED" = 1 ]; then
+		restore_file "$SYSTEM_CONFIG" system || failed=1
+	fi
+	if [ "$APP_COMMIT_STARTED" = 1 ]; then
+		restore_file "$SHEEPFOLD_CONFIG" sheepfold || failed=1
+	fi
+	return "$failed"
+}
+
+discard_transaction() {
+	[ -n "${TRANSACTION_DIR:-}" ] || return 0
+	# После подтверждённой записи отказ уборки не отменяет её и не должен
+	# препятствовать restart. Остаток закрыт и требует отдельного обслуживания.
+	rm -rf "$TRANSACTION_DIR" || printf 'Sheepfold time settings: protected temporary directory remains: %s\n' "$TRANSACTION_DIR" >&2
+	TRANSACTION_DIR=""
+	return 0
 }
 
 transaction_cleanup() {
+	local cleanup_status
 	cleanup_status="${1:-1}"
 	trap - EXIT HUP INT TERM
 	if [ "${TRANSACTION_ACTIVE:-0}" = 1 ]; then
-		rollback
+		if rollback; then
+			printf '%s\n' 'status=error' 'error=time_save_failed' 'config_files_restored=1'
+			printf 'Router time configuration files restored; runtime state was not reapplied.\n' >&2
+			discard_transaction
+		else
+			printf '%s\n' 'status=error' 'error=time_rollback_failed' 'config_files_restored=0' 'recovery_required=1'
+			printf 'Could not restore router time configuration files. Protected recovery snapshots kept in: %s\n' "$TRANSACTION_DIR" >&2
+			# При сигнале сохраняем его код, но не выдаём неполный откат за успех.
+			case "$cleanup_status" in 129|130|143) ;; *) cleanup_status=6 ;; esac
+		fi
+	else
+		discard_transaction
 	fi
-	[ -z "${TRANSACTION_DIR:-}" ] || rm -rf "$TRANSACTION_DIR" 2>/dev/null || true
 	sheepfold_lock_release
 	exit "$cleanup_status"
 }
 
+# Подтверждение записи — не совпадение случайно напечатанной строки. UCI
+# обязан успешно прочитать каждое поле. Проверяем и system, и зеркала Sheepfold;
+# это последовательное readback, не атомарный снимок всех процессов UCI.
+saved_value_equals() {
+	local actual
+	actual="$(command uci -q get "$1" 2>/dev/null)" || return 1
+	[ "$actual" = "$2" ]
+}
+
+verify_saved_time() {
+	saved_value_equals 'system.@system[0]' system || return 1
+	saved_value_equals system.ntp timeserver || return 1
+	saved_value_equals sheepfold.global sheepfold || return 1
+	saved_value_equals 'system.@system[0].zonename' "$zone" || return 1
+	saved_value_equals 'system.@system[0].timezone' "$timezone" || return 1
+	saved_value_equals system.ntp.enabled "$client_enabled" || return 1
+	saved_value_equals system.ntp.enable_server "$server_enabled" || return 1
+	saved_value_equals system.ntp.server "$servers" || return 1
+	saved_value_equals sheepfold.global.router_ntp_server_enabled "$server_enabled" || return 1
+	saved_value_equals sheepfold.global.router_ntp_client_auto_configure "$client_enabled" || return 1
+	saved_value_equals sheepfold.global.router_timezone_name "$zone" || return 1
+	saved_value_equals sheepfold.global.router_timezone "$timezone" || return 1
+	saved_value_equals sheepfold.global.router_ntp_servers "$servers" || return 1
+	saved_value_equals sheepfold.global.router_time_configured 1 || return 1
+	saved_value_equals sheepfold.global.router_time_country_profile "$country" || return 1
+	saved_value_equals sheepfold.global.router_time_configured_at "$configured_at"
+}
+
 save_time() {
+	local configured_at
 	server_enabled="${1:-}"
 	client_enabled="${2:-}"
 	requested_zone="${3:-}"
 	requested_timezone="${4:-}"
 	requested_servers="${5:-}"
+	# Пустой аргумент означает «сохранить текущее». Разрешаем наследуемые
+	# значения только после ожидания lock, иначе сохраним устаревший снимок.
+	sheepfold_lock_acquire "$TIME_LOCK" 10 || { printf 'Time settings are busy.\n' >&2; return 3; }
+	trap 'transaction_cleanup $?' EXIT
+	trap 'exit 129' HUP
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
 	country="$(normalize_country "${6:-$(uci_get sheepfold.global.country_profile)}")"
 	defaults="$(country_defaults "$country")"
 	recommended_zone="${defaults%%|*}"
@@ -170,20 +287,25 @@ save_time() {
 	fi
 	[ -n "$servers" ] || { printf 'At least one valid NTP server hostname is required.\n' >&2; return 2; }
 
-	sheepfold_lock_acquire "$TIME_LOCK" 10 || { printf 'Time settings are busy.\n' >&2; return 3; }
-	trap 'transaction_cleanup $?' EXIT
-	trap 'exit 129' HUP
-	trap 'exit 130' INT
-	trap 'exit 143' TERM
-	mkdir -p "$TRANSACTION_ROOT"
-	chmod 700 "$TRANSACTION_ROOT" 2>/dev/null || true
-	TRANSACTION_DIR="$TRANSACTION_ROOT/transaction.$$"
-	UCI_SAVEDIR="$TRANSACTION_DIR/uci"
-	umask 077
-	mkdir "$TRANSACTION_DIR" "$UCI_SAVEDIR"
-	snapshot_file "$SYSTEM_CONFIG" system
-	snapshot_file "$SHEEPFOLD_CONFIG" sheepfold
-	TRANSACTION_ACTIVE=1
+	if ! prepare_transaction; then
+		printf '%s\n' 'status=error' 'error=time_snapshot_failed'
+		printf 'Could not prepare router time recovery snapshots; settings were not written.\n' >&2
+		return 4
+	fi
+
+	# Не вкладываем date в успешную команду set: её exit скрывал отказ часов.
+	# Ноль допустим как служебная отметка; это НЕ подтверждение синхронизации.
+	if ! configured_at="$(date +%s 2>/dev/null)"; then
+		printf '%s\n' 'status=error' 'error=time_clock_unavailable'
+		printf 'Could not read router time; settings were not written.\n' >&2
+		return 4
+	fi
+	case "$configured_at" in
+		''|*[!0-9]*)
+			printf '%s\n' 'status=error' 'error=time_clock_unavailable'
+			printf 'Invalid router time result; settings were not written.\n' >&2
+			return 4 ;;
+	esac
 
 	uci() { command uci -t "$UCI_SAVEDIR" -p "$UCI_SAVEDIR" "$@"; }
 	uci -q get 'system.@system[0]' >/dev/null 2>&1 || uci -q add system system >/dev/null
@@ -205,26 +327,38 @@ save_time() {
 	uci -q set "sheepfold.global.router_ntp_servers=$servers"
 	uci -q set "sheepfold.global.router_time_configured=1"
 	uci -q set "sheepfold.global.router_time_country_profile=$country"
-	uci -q set "sheepfold.global.router_time_configured_at=$(date +%s)"
+	uci -q set "sheepfold.global.router_time_configured_at=$configured_at"
 
-	if ! uci -q commit system || ! uci -q commit sheepfold; then
-		printf 'Could not commit router time settings; previous configuration was restored.\n' >&2
+	# Пока выполнялся только staging в частном savedir, файлы не изменялись:
+	# откат их полных снимков мог бы затереть чужую параллельную запись.
+	TRANSACTION_ACTIVE=1
+	SYSTEM_COMMIT_STARTED=1
+	if ! uci -q commit system; then
+		printf 'Could not commit router time settings; file recovery will be attempted.\n' >&2
+		return 4
+	fi
+	APP_COMMIT_STARTED=1
+	if ! uci -q commit sheepfold; then
+		printf 'Could not commit router time settings; file recovery will be attempted.\n' >&2
 		return 4
 	fi
 
-	if [ "$(command uci -q get 'system.@system[0].zonename' 2>/dev/null || true)" != "$zone" ] ||
-	   [ "$(command uci -q get 'system.@system[0].timezone' 2>/dev/null || true)" != "$timezone" ] ||
-	   [ "$(command uci -q get sheepfold.global.router_time_configured 2>/dev/null || true)" != 1 ]; then
-		printf 'Router time settings verification failed; previous configuration was restored.\n' >&2
+	if ! verify_saved_time; then
+		printf 'Router time settings verification failed; file recovery will be attempted.\n' >&2
 		return 4
 	fi
 
 	TRANSACTION_ACTIVE=0
-	rm -rf "$TRANSACTION_DIR"
-	TRANSACTION_DIR=""
+	discard_transaction
 	trap - EXIT HUP INT TERM
 	sheepfold_lock_release
-	[ -x "$SYSNTPD_INIT" ] && "$SYSNTPD_INIT" restart >/dev/null 2>&1 || true
+	# После commit не откатываем настройки из-за отказа службы. Клиент должен
+	# отличить сохранённый снимок от неподтверждённого применения NTP.
+	if [ -x "$SYSNTPD_INIT" ] && ! "$SYSNTPD_INIT" restart >/dev/null 2>&1; then
+		log_event "Настройки времени сохранены, но перезапуск NTP не выполнен: timezone $zone"
+		printf '%s\n' 'status=error' 'error=ntp_restart_failed' 'persisted=1' 'runtime_applied=0'
+		return 5
+	fi
 	log_event "Настройки времени сохранены: timezone $zone, NTP $servers"
 	printf 'status=ok\n'
 	printf 'timezone_name=%s\n' "$zone"

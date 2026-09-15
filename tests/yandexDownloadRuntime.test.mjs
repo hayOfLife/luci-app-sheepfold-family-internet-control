@@ -10,6 +10,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { shellTestPath } from '../tools/quality/testEnvironment.mjs';
+import { runtimeTimeout } from './helpers/runtimeProcess.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 const runtime = join(repo, 'package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold');
@@ -26,7 +27,7 @@ function fixture(t, options = {}) {
   const foreign = join(root, 'foreign');
   for (const dir of [bin, tmp, foreign]) mkdirSync(dir);
   writeFileSync(join(foreign, 'keep'), oldBytes);
-  const path = p => shellTestPath(p, { cwd: repo, allowedRoot: root });
+  const path = p => shellTestPath(p, { cwd: root, allowedRoot: root });
   const traceFile = join(root, 'trace.jsonl'), stateFile = join(root, 'state.json'), optsFile = join(root, 'options.json');
   writeFileSync(traceFile, ''); writeFileSync(stateFile, '{}');
   let target = join(tmp, 'downloads', options.localName || 'copy.tar');
@@ -133,8 +134,8 @@ real=json.load(open(os.environ['YD_TOOLS']));sys.exit(subprocess.run([real[kind]
   // shellTestPath нормализует '..' и '//'; тестовый ввод сохраняем буквально,
   // иначе это проверяло бы другой путь, уже исправленный самим стендом.
   const rawTarget = { traversal: path(tmp) + '/../foreign/keep', doubleSlash: path(tmp) + '//downloads/copy.tar', trailing: path(tmp) + '/downloads/' }[options.target];
-  const run = (remote = 'backups/copy.tar', dest = target) => capture(spawnSync('sh', ['-c', `export PATH=${quote(path(bin))}:"$PATH"; exec sh "$@"`, 'fixture', path(join(bin, 'entry')), 'download', remote, dest === target && rawTarget ? rawTarget : path(dest)], { cwd: root, env, encoding: 'utf8', timeout: 20000 }));
-  const args = values => capture(spawnSync('sh', ['-c', `export PATH=${quote(path(bin))}:"$PATH"; exec sh "$@"`, 'fixture', path(join(bin, 'entry')), 'download', ...values], { cwd: root, env, encoding: 'utf8', timeout: 20000 }));
+  const run = (remote = 'backups/copy.tar', dest = target) => capture(spawnSync('sh', ['-c', `export PATH=${quote(path(bin))}:"$PATH"; exec sh "$@"`, 'fixture', path(join(bin, 'entry')), 'download', remote, dest === target && rawTarget ? rawTarget : path(dest)], { cwd: root, env, encoding: 'utf8', timeout: runtimeTimeout(20000) }));
+  const args = values => capture(spawnSync('sh', ['-c', `export PATH=${quote(path(bin))}:"$PATH"; exec sh "$@"`, 'fixture', path(join(bin, 'entry')), 'download', ...values], { cwd: root, env, encoding: 'utf8', timeout: runtimeTimeout(20000) }));
   const events = () => readFileSync(traceFile, 'utf8').split('\n').filter(Boolean).map(JSON.parse);
   const curls = () => events().filter(e => e.method);
   const leftovers = () => {

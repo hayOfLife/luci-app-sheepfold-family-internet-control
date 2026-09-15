@@ -37,6 +37,14 @@ export const testCategories = Object.freeze({
     'testCategories.test.mjs',
   ],
   luci: [
+    'timeSettingsLifecycle.test.mjs',
+    'timeTransactionRecovery.test.mjs',
+    'timeSaveConfirmation.test.mjs',
+    'messengerSettingsLifecycle.test.mjs',
+    'backupExportSafety.test.mjs',
+    'backupImportUiSafety.test.mjs',
+    'settingsSaveLifecycle.test.mjs',
+    'backupMutationConsistency.test.mjs',
     'backupRecoveryRegression.test.mjs',
     'homeNetworkAccess.test.mjs',
     'overviewFinalRuntime.test.mjs',
@@ -331,6 +339,10 @@ export const testCategories = Object.freeze({
     'tokenDeviceBinding.test.mjs',
   ],
   security: [
+    'backupExportSafety.test.mjs',
+    'backupImportUiSafety.test.mjs',
+    'backupMutationConsistency.test.mjs',
+    'cloudArchiveSafety.test.mjs',
     'yandexDiskRuntime.test.mjs',
     'yandexBackupRuntime.test.mjs', 'yandexUploadRuntime.test.mjs', 'yandexEventsRuntime.test.mjs', 'yandexSyncRuntime.test.mjs', 'yandexDownloadRuntime.test.mjs', 'yandexContextRuntime.test.mjs',
     'googleDriveUploadRuntime.test.mjs',
@@ -408,6 +420,7 @@ export const testCategories = Object.freeze({
     'updateTransportSafety.test.mjs',
   ],
   messaging: [
+    'messengerSettingsLifecycle.test.mjs',
     'adminNotificationRuntime.test.mjs',
     'childAccessRequestRuntime.test.mjs',
     'childRequestQueueRuntime.test.mjs',
@@ -464,6 +477,7 @@ export const testCategories = Object.freeze({
     'updateTransportSafety.test.mjs',
   ],
   tooling: [
+    'runtimeProcess.test.mjs',
     'documentationOperations.test.mjs',
     'architectureDecisions.test.mjs',
     'changeImpact.test.mjs',

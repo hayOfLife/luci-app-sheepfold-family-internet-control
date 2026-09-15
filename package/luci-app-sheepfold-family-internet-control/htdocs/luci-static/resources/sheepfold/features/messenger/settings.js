@@ -90,6 +90,9 @@ function settingsBox(deps) {
 	var fields = [vkToken, vkCommunity, vkAdmin, telegramToken, telegramAdmin];
 	var select;
 	var initialOptions;
+	var confirmedOptions = null;
+	var saving = false;
+	var testing = false;
 	var statusText = E('span', {}, activeValue === 'none' ? _('Messenger disabled.') : _('Messenger status will be checked after saving settings or sending a test message.'));
 	var statusPlaque = E('div', {
 		'class': 'sf-messenger-status ' + (activeValue === 'none' ? 'sf-messenger-status-muted' : 'sf-messenger-status-idle')
@@ -112,48 +115,107 @@ function settingsBox(deps) {
 		return _('Messenger disabled.');
 	}
 
-	function readStatus() {
-		return deps.routerControl(['messenger-status']).then(function (result) {
-			return deps.parseOutput(result.stdout || '');
+	function hasEdits() {
+		return !deps.sameValues(initialOptions, collectOptions());
+	}
+
+	function submittedOptions(options) {
+		var saved = { active_messenger: options.active_messenger };
+		var keys = options.active_messenger === 'telegram' ? ['telegram_bot_token', 'telegram_admin_chat_id'] :
+			(options.active_messenger === 'vk' ? ['vk_access_token', 'vk_community_id', 'vk_admin_user_id'] : []);
+		keys.forEach(function (key) { saved[key] = options[key]; });
+		return saved;
+	}
+
+	function acceptSaved() {
+		// Ответ подтверждает отправленные поля, а не поздний ввод или скрытые
+		// настройки другого мессенджера, которых эта команда не сохраняла.
+		Object.keys(confirmedOptions || {}).forEach(function (key) {
+			initialOptions[key] = confirmedOptions[key];
 		});
 	}
 
-	function checkConnection() {
-		var options = collectOptions();
+	function edited() {
+		setStatus('idle', hasEdits() ? _('Messenger settings have unsaved changes. Press Save before testing the connection.') :
+			_('Messenger status will be checked after saving settings or sending a test message.'));
+		deps.changed();
+	}
+
+	function showResult(options, kind, message) {
+		// Поздний сетевой ответ относится к снимку запроса, не к новым полям.
+		if (deps.sameValues(options, collectOptions()))
+			setStatus(kind, message);
+	}
+
+	function checkedExec(result, message) {
+		if (!result || typeof result.code !== 'number')
+			throw new Error(message);
+		return deps.ensureOk(result, message);
+	}
+
+	function readStatus() {
+		return deps.routerControl(['messenger-status']).then(function (result) {
+			var status = deps.parseOutput(result.stdout || '');
+			if (!/^(none|vk|telegram)$/.test(status.active || ''))
+				throw new Error(_('Could not read saved messenger settings. Refresh the page before trying again.'));
+			return status;
+		});
+	}
+
+	function checkConnection(options) {
 		if (options.active_messenger === 'none') {
-			setStatus('muted', _('Messenger disabled.'));
+			showResult(options, 'muted', _('Messenger disabled.'));
 			return Promise.resolve(null);
 		}
 
-		setStatus('checking', _('Checking messenger connection...'));
+		showResult(options, 'checking', _('Checking messenger connection...'));
 		return deps.routerControl(['messenger-check']).then(function (result) {
 			var status = deps.parseOutput(result.stdout || '');
-			setStatus(status.status === 'connected' ? 'ok' : 'warning', status.message || fallbackStatus(options.active_messenger));
+			showResult(options, status.status === 'connected' ? 'ok' : 'warning', status.message || fallbackStatus(options.active_messenger));
 			return status;
-		}, function (error) {
-			var status = deps.parseOutput(error && error.stdout ? error.stdout : '');
-			setStatus('warning', status.message || fallbackStatus(options.active_messenger));
-			return status;
+		}, function () {
+			// Не извлекаем «connected» из частичного вывода неуспешной команды.
+			showResult(options, 'warning', fallbackStatus(options.active_messenger));
+			return null;
 		});
 	}
 
 	function saveOptions() {
+		if (testing)
+			return Promise.reject(new Error(_('Wait for the test message to finish, then save messenger settings.')));
 		var options = collectOptions();
 		var args = options.active_messenger === 'telegram' ?
 			['messenger-save-telegram', options.telegram_bot_token || '', options.telegram_admin_chat_id || ''] :
 			(options.active_messenger === 'vk' ?
 				['messenger-save-vk', options.vk_access_token || '', options.vk_community_id || '', options.vk_admin_user_id || ''] :
 				['messenger-disable']);
+		confirmedOptions = null;
+		saving = true;
 
-		return deps.routerControl(args).then(function () {
-			return fs.exec('/etc/init.d/sheepfold', ['restart']).catch(function () {});
-		}).then(readStatus).then(function (status) {
-			if ((status.active || 'none') !== options.active_messenger)
-				throw new Error(_('Messenger settings were sent to the router, but the router still reports another active messenger. Reinstall the latest Sheepfold package and check UCI config.') + ' ' + _('Router reports active messenger:') + ' ' + (status.active || 'none'));
-
-			activeValue = options.active_messenger;
-			initialOptions = collectOptions();
-			return checkConnection().then(function () { return status; });
+		return Promise.resolve().then(function () {
+			return deps.routerControl(args);
+		}).then(function () {
+			confirmedOptions = submittedOptions(options);
+			acceptSaved();
+			return fs.exec('/etc/init.d/sheepfold', ['restart']);
+		}).then(function (result) {
+			checkedExec(result, _('Could not restart Sheepfold after saving messenger settings.'));
+			return readStatus();
+		}).then(function (status) {
+			if (status.active !== options.active_messenger)
+				throw new Error(_('Messenger settings were sent to the router, but the router still reports another active messenger. Reinstall the latest Sheepfold package and check UCI config.') + ' ' + _('Router reports active messenger:') + ' ' + status.active);
+			return checkConnection(options).then(function () { return status; });
+		}).catch(function (value) {
+			var error = value && typeof value === 'object' ? value : new Error(String(value));
+			// Успешный backend-save уже выполнен. Отказ restart/readback не должен
+			// объявлять всю запись несделанной или повторно принимать поздний ввод.
+			if (confirmedOptions) {
+				error.persisted = true;
+				error.runtimeApplied = false;
+			}
+			throw error;
+		}).finally(function () {
+			saving = false;
 		});
 	}
 
@@ -185,25 +247,34 @@ function settingsBox(deps) {
 			'class': 'sf-action sf-action-positive sf-action-nowrap',
 			'click': function (event) {
 				event.preventDefault();
-				select.value = 'telegram';
-				setVisibility('telegram');
-				setStatus('checking', _('Checking messenger connection...'));
-				deps.command({
-					key: 'messenger-telegram-test',
-					button: event.currentTarget,
-					task: function () {
-						return saveOptions().then(function () {
-							return fs.exec('/usr/libexec/sheepfold/sheepfold-telegram-bot', ['send-test']);
-						}).then(function (result) {
-							if (Number(result && result.code || 0) !== 0)
-								throw result;
-						});
-					},
-					successMessage: _('Test Telegram message sent.'),
-					errorMessage: _('Could not send test Telegram message. Check bot token, chat ID, internet access on the router, and that Telegram is selected as the active messenger.'),
-					onSuccess: function () { setStatus('ok', _('Telegram connected.')); },
-					onError: function () { setStatus('warning', _('No response from Telegram server.')); }
-				}).catch(function () { return null; });
+				// Тест — не альтернативная кнопка Save: реквизиты и выбранный
+				// мессенджер меняются только явным сохранением родителя.
+				if (saving || hasEdits() || initialOptions.active_messenger !== 'telegram') {
+					deps.notify(_('Save messenger settings and select Telegram before sending a test message.'), 'warning');
+					return Promise.resolve(false);
+				}
+				if (testing)
+					return Promise.resolve(false);
+				var options = collectOptions();
+				// После завершения обработчика браузер очищает event.currentTarget
+				var button = event.currentTarget;
+				testing = true;
+				return Promise.resolve().then(function () {
+					showResult(options, 'checking', _('Checking messenger connection...'));
+					return deps.command({
+						key: 'messenger-telegram-test',
+						button: button,
+						task: function () {
+							return fs.exec('/usr/libexec/sheepfold/sheepfold-telegram-bot', ['send-test']).then(function (result) {
+								return checkedExec(result, _('Could not send test Telegram message. Check bot token, chat ID, internet access on the router, and that Telegram is selected as the active messenger.'));
+							});
+						},
+						successMessage: _('Test Telegram message sent.'),
+						errorMessage: _('Could not send test Telegram message. Check bot token, chat ID, internet access on the router, and that Telegram is selected as the active messenger.'),
+						onSuccess: function () { showResult(options, 'ok', _('Telegram connected.')); },
+						onError: function () { showResult(options, 'warning', _('No response from Telegram server.')); }
+					});
+				}).catch(function () { return null; }).finally(function () { testing = false; });
 			}
 		}, _('Send test Telegram message')),
 		E('div', { 'class': 'sf-messenger-command-box' }, [E('h4', {}, _('Commands')), commandList()])
@@ -229,13 +300,13 @@ function settingsBox(deps) {
 	setVisibility(activeValue);
 	initialOptions = collectOptions();
 	fields.forEach(function (item) {
-		item.sfInput.addEventListener('input', deps.changed);
-		item.sfInput.addEventListener('change', deps.changed);
+		item.sfInput.addEventListener('input', edited);
+		item.sfInput.addEventListener('change', edited);
 	});
 	deps.registerSaver({
-		isChanged: function () { return !deps.sameValues(initialOptions, collectOptions()); },
+		isChanged: hasEdits,
 		save: saveOptions,
-		accept: function () { initialOptions = collectOptions(); }
+		accept: acceptSaved
 	});
 
 	return E('div', { 'class': 'sf-box' }, [

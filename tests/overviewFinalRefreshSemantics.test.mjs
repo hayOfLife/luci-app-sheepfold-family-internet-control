@@ -1,3 +1,6 @@
+/* Проверяет границы сохранённого результата и последующего обновления LuCI.
+ * Настоящие модули с моделями DOM/UCI, только память процесса. Не доказывает
+ * работу радио, браузера или rpcd; ожидаемые отказы не заменяются успехом. */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -275,7 +278,7 @@ describe('final refresh and pairing semantics §ovaudit4', () => {
     };
     const draft = {
       snapshot: () => ({}), dirtySavers: () => [saver], has: () => false, get: () => '',
-      setSaving() {}, clearOptions() {},
+      setSaving() {}, acceptOptions() {},
     };
     const flow = module.create({
       draft,

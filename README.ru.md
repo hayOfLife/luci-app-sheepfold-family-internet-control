@@ -6,6 +6,10 @@
 
 Русский | [English](README.md)
 
+> Автоматическое резервное копирование настроек в облако временно недоступно.
+> Используйте безопасный ручной экспорт в настройках роутера. Отдельная отправка
+> снимка журнала сохранена. [Ограничения](docs/settings-backup.ru.md) · [Решения по ревью](docs/review-r323-acceptance.ru.md).
+
 [Презентация проекта Sheepfold](docs/project-presentation.ru.md)
 
 [Зашифрованные баг-репорты родительского приложения](docs/support-report-transport.ru.md) · [Переходный канал LuCI: Yandex Cloud + YDB](docs/yandex-cloud-ydb-feedback.ru.md)

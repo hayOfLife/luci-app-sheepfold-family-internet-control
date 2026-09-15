@@ -9,6 +9,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
+import { runtimeTimeout, completedProcess } from './runtimeProcess.mjs';
 import { shellTestPath } from '../../tools/quality/testEnvironment.mjs';
 const repoRoot = resolve(import.meta.dirname, '../..');
 const sourceRoot = process.env.SHEEPFOLD_NOTIFICATION_TEST_SOURCE || repoRoot;
@@ -38,7 +39,7 @@ export function createNotificationFixture() {
     return { shell: process.platform === 'win32' ? 'bash' : 'sh', args: ['-c',
       'PATH="$1:$PATH"; export PATH; shift; exec "$@"', 'notification-fixture', pathForShell(bin),
       pathForShell(join(bin, name)), ...args], options: {
-      cwd: repoRoot, encoding: 'utf8', timeout: 15000,
+      cwd: repoRoot, encoding: 'utf8', timeout: runtimeTimeout(15000),
       env: { ...process.env, SHEEPFOLD_NOTIFICATION_DIR: pathForShell(queue),
         SHEEPFOLD_TELEGRAM_HELPER: pathForShell(join(bin, 'telegram')),
         TEST_NOTICE_ACTIONS: pathForShell(actions), TEST_BARRIER: pathForShell(join(root, 'release')),
@@ -46,7 +47,7 @@ export function createNotificationFixture() {
         HTTP_AUTHORIZATION: 'Bearer synthetic', CONTENT_LENGTH: '0', ...extra },
     } };
   }
-  function run(name, args = [], extra = {}) { const c = command(name, args, extra); return spawnSync(c.shell, c.args, c.options); }
+  function run(name, args = [], extra = {}) { const c = command(name, args, extra); return completedProcess(spawnSync(c.shell, c.args, c.options), 'notification fixture'); }
   function start(args = [], extra = {}) {
     const c = command('sheepfold-admin-notification', args, extra);
     const child = spawn(c.shell, c.args, c.options);

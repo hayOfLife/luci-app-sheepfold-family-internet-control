@@ -13,6 +13,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { shellTestPath } from '../tools/quality/testEnvironment.mjs';
+import { runtimeTimeout } from './helpers/runtimeProcess.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 const runtime = join(repo, 'package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold');
@@ -33,7 +34,7 @@ function fixture(t, opts = {}) {
   mkdirSync(archiveDir, { recursive: true });
   const archive = join(archiveDir, 'fixture.tar');
   writeFileSync(archive, 'synthetic archive to preserve');
-  const path = (value) => shellTestPath(value, { cwd: repo, allowedRoot: root });
+  const path = (value) => shellTestPath(value, { cwd: work, allowedRoot: root });
   const put = (name, text) => { writeFileSync(join(bin, name), text); chmodSync(join(bin, name), 0o755); };
   const options = join(root, 'options.json'), state = join(root, 'state.json'), trace = join(root, 'trace.jsonl');
   writeFileSync(options, JSON.stringify({ body: xml, ...opts }));
@@ -143,8 +144,8 @@ exec /usr/bin/awk "$@"
   const env = { ...process.env, YANDEX_OPTIONS: options, YANDEX_STATE: state, YANDEX_TRACE: trace, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
   const results = [];
   const capture = (action, result) => { results.push({ action, status:result.status, stdout:result.stdout, stderr:result.stderr, error:result.error?.message }); return result; };
-  const run = (args) => capture(args, spawnSync('sh', ['-c', `export PATH=${quote(path(bin))}:"$PATH"; exec sh "$@"`, 'fixture', path(join(bin, 'sheepfold-yandex-disk')), ...args], { cwd: work, env, encoding: 'utf8', timeout: 10000 }));
-  const helper = (command) => capture(command, spawnSync('sh', ['-c', `export PATH=${quote(path(bin))}:"$PATH"; . ${quote(path(join(bin, 'library.sh')))}; ${command}`], { cwd: work, env, encoding: 'utf8', timeout: 10000 }));
+  const run = (args) => capture(args, spawnSync('sh', ['-c', `export PATH=${quote(path(bin))}:"$PATH"; exec sh "$@"`, 'fixture', path(join(bin, 'sheepfold-yandex-disk')), ...args], { cwd: work, env, encoding: 'utf8', timeout: runtimeTimeout(10000) }));
+  const helper = (command) => capture(command, spawnSync('sh', ['-c', `export PATH=${quote(path(bin))}:"$PATH"; . ${quote(path(join(bin, 'library.sh')))}; ${command}`], { cwd: work, env, encoding: 'utf8', timeout: runtimeTimeout(10000) }));
   const events = () => readFileSync(trace,'utf8').split('\n').filter(Boolean).map((v) => JSON.parse(v));
   const readState = () => JSON.parse(readFileSync(state,'utf8'));
   t.after(() => {
@@ -236,26 +237,7 @@ describe('Yandex status observation and archive preflight', () => {
     assert.equal(result.status,0,result.stderr); const body=parse(result);
     assert.equal(body.state,'error'); assert.equal(body.free_pct,0); assert.equal(curls(f).length,2);
   });
-  for (const authorized of ['0','1']) it(`rejects current bad credentials before archive mutation with flag ${authorized}`, (t) => {
-    const f=fixture(t,{probeHttp:401,saved:{'sheepfold.cloud.authorized':authorized}});
-    const before=f.readState(); const result=f.run(['archive-push']);
-    assert.notEqual(result.status,0); assert.equal(parse(result).error,'auth_failed');
-    assert.equal(curls(f).length,1); assert.equal(curls(f)[0].method,'PROPFIND'); assert.deepEqual(f.readState(),before);
-  });
-  for (const authorized of ['0','1']) it(`reaches explicit archive preparation without writing a flag ${authorized}`, (t) => {
-    // MKCOL намеренно отказывает: проверяем только preflight до подготовки,
-    // не выдаём старый непроверенный uploader за рабочую отправку.
-    const f=fixture(t,{saved:{'sheepfold.cloud.authorized':authorized}});
-    const before=f.readState(); const result=f.run(['archive-push']);
-    assert.notEqual(result.status,0);
-    assert.deepEqual(curls(f).map((e)=>e.method),['PROPFIND','MKCOL']);
-    assert.deepEqual(f.readState(),before);
-  });
-  it('keeps another selected storage backend network-free for status and archive', (t) => {
-    const f=fixture(t,{saved:{'sheepfold.global.log_storage':'ram'}});
-    assert.equal(f.run(['status']).status,0); assert.equal(f.run(['archive-push']).status,0);
-    assert.equal(curls(f).length,0);
-  });
+
 });
 
 // r315: реальные аргументы MKCOL, изменения shell-состояния и источник root.
@@ -353,7 +335,7 @@ describe('Yandex MKCOL outcome and request boundaries', () => {
     assert.notEqual(result.status, 0); assert.equal(curls(f).length, 0);
     assert.ok(f.events().some((e) => e.kind === 'uci' && e.args[1] === `sheepfold.cloud.${key}`));
   });
-  for (const command of ['archive-push', 'push-events']) it(`returns a structured ${command} preflight failure without altering local data`, (t) => {
+  for (const command of ['push-events']) it(`returns a structured ${command} preflight failure without altering local data`, (t) => {
     const f = fixture(t, { mkcolHttp: 423, events: 'live journal\n' }); const before = f.readState();
     const result = f.run([command]);
     assert.notEqual(result.status, 0); assert.equal(parse(result).error, 'remote_prepare_failed');
@@ -397,7 +379,7 @@ describe('Yandex root selection is not replaced after failed UCI reads', () => {
     assert.ok(f.events().some((e) => e.kind === 'rootChanged'));
     assert.equal(f.readState().saved['sheepfold.cloud.root_folder'], '/new-destination');
   });
-  for (const command of ['archive-push', 'push-events']) it(`stops ${command} before MKCOL when configured root is unreadable`, (t) => {
+  for (const command of ['push-events']) it(`stops ${command} before MKCOL when configured root is unreadable`, (t) => {
     const f = fixture(t, { failGet: 'sheepfold.cloud.root_folder', events: 'live\n', saved: { 'sheepfold.cloud.root_folder': '/chosen-root' } }); const before = f.readState();
     const result = f.run([command]);
     assert.notEqual(result.status, 0); assert.equal(parse(result).error, 'root_unavailable');
@@ -500,16 +482,7 @@ describe('Yandex invalid destinations stop before changing cloud folders', () =>
       assert.notEqual(result.status, 0); assert.equal(result.stdout, ''); assert.equal(curls(f).length, 0);
     });
   }
-  it('stops archive preflight for a dotted root and preserves local archives and UCI', (t) => {
-    const f = fixture(t, { saved: { 'sheepfold.cloud.root_folder': '/family/../outside' }, mkcolHttp: 423, events: 'keep\n' });
-    const before = f.readState(); const result = f.run(['archive-push']);
-    assert.notEqual(result.status, 0); assert.equal(parse(result).error, 'root_unavailable');
-    assert.deepEqual(curls(f).map((e) => e.method), ['PROPFIND']);
-    assert.deepEqual(f.readState(), before);
-    assert.equal(readFileSync(f.archive, 'utf8'), 'synthetic archive to preserve');
-    assert.equal(readFileSync(join(f.ram, 'events.log'), 'utf8'), 'keep\n');
-    assert.ok(!existsSync(join(f.ram, '.yandex-backup-staging')));
-  });
+
   it('does not query the substituted destination during status for a dotted root', (t) => {
     const f = fixture(t, { saved: { 'sheepfold.cloud.root_folder': '/family/../outside' } });
     const result = f.run(['status']); assert.equal(result.status, 0, result.stderr);

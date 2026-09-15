@@ -4305,3 +4305,20 @@ msgstr ""
 
 msgid "Could not read the home network. Reload settings."
 msgstr ""
+
+msgid "Could not create the backup file. Please try again."
+msgstr ""
+
+msgid "The import result could not be confirmed. Reload the page and check the router settings before trying again."
+msgstr ""
+
+msgid "Settings were imported, but the page could not be refreshed. Reload this page before making more changes."
+msgstr ""
+
+#. §cfgbak1: обнаруженный конфликт до первого изменения импорта.
+msgid "Router settings changed while the import was waiting. No backup was applied. Reload the page and check the settings before importing again."
+msgstr ""
+
+#: htdocs/luci-static/resources/sheepfold/features/settings/time.js
+msgid "Could not read the router clock. Time settings were not changed. Check the router before trying again."
+msgstr ""

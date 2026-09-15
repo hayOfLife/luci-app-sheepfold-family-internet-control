@@ -1,3 +1,6 @@
+/* Исполняет настоящие LuCI-модули с моделями UCI/DOM и локальными shell-стендами.
+ * Проверяет очереди, подтверждение и отказ, меняет только временные данные теста.
+ * Не заменяет настоящий браузер, RPC и физический роутер. */
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
@@ -141,7 +144,7 @@ describe('experimental final overview runtime tests §ovaudit3', () => {
     const second = { isChanged: () => secondDirty, save: async () => { throw new Error('second failed'); }, accept: () => { secondDirty = false; } };
     const draft = {
       snapshot: () => ({ language: 'ru' }), dirtySavers: () => [first, second],
-      has: () => false, get: () => '', setSaving() {}, clearOptions: () => { optionClears++; },
+      has: () => false, get: () => '', setSaving() {}, acceptOptions: (options) => { assert.deepEqual({ ...options }, { language: 'ru' }); optionClears++; },
     };
     const flow = module.create({
       draft, persistence: { validate() {}, save: async () => {} }, applyRuntime: async () => {}, applyPostSave: async () => {},
@@ -151,7 +154,7 @@ describe('experimental final overview runtime tests §ovaudit3', () => {
     await assert.rejects(flow.save(), (error) => error.persisted === true && error.completedSpecialSavers === 1);
     assert.equal(firstDirty, false);
     assert.equal(secondDirty, true);
-    assert.ok(optionClears >= 1);
+    assert.equal(optionClears, 1, 'only the submitted options are acknowledged once');
   });
 
   it('checks every settings side effect and runs schedule-sync only once', async () => {
@@ -474,6 +477,7 @@ describe('experimental final overview runtime tests §ovaudit3', () => {
     const module = loadModule('sheepfold/features/settings/backup-persistence.js');
     const adapter = module.create({
       model: {
+        build: loadModule('sheepfold/features/settings/backup.js').build,
         secretPlaceholder: '[secret]', validate: (value) => value,
         prepareRestore: (value) => ({ payload: value, routerTransfer: false }),
       },
@@ -485,7 +489,7 @@ describe('experimental final overview runtime tests §ovaudit3', () => {
       },
       refreshRuntime: async () => {},
     });
-    const current = { configs: { sheepfold: [], dhcp: [], wireless: [] } };
+    const current = { configs: { sheepfold: [{ name: 'cloud', type: 'device', options: {} }], dhcp: [], wireless: [] } };
     const imported = { configs: {
       sheepfold: [{ name: 'cloud', type: 'yandex_disk', options: {} }],
       dhcp: [], wireless: [],

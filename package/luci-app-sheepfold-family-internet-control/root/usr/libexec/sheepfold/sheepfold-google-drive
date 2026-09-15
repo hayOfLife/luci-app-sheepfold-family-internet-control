@@ -1106,38 +1106,13 @@ drive_archive_stamp() {
 	printf '%s' "$stamp"
 }
 
-create_config_backup() (
-	work="${1:-}"
-	[ -n "$work" ] && [ -d "$work" ] && [ ! -L "$work" ] || exit 1
-	umask 077
-	[ -f /etc/config/sheepfold ] && [ ! -L /etc/config/sheepfold ] || exit 1
-	mkdir "$work/config-source" || exit 1
-	cp -p /etc/config/sheepfold "$work/config-source/sheepfold" || exit 1
-	chmod 600 "$work/config-source/sheepfold" || exit 1
-	cmp -s /etc/config/sheepfold "$work/config-source/sheepfold" || exit 1
-	stamp="$(drive_archive_stamp)" || exit 1
-	backup_file="$work/sheepfold-config-$stamp.tar.gz"
-	if command -v gzip >/dev/null 2>&1; then
-		tar -C "$work/config-source" -czf "$backup_file" sheepfold || exit 1
-		list_flags=-tzf
-		read_flags=-xzOf
-	else
-		backup_file="${backup_file%.gz}"
-		tar -C "$work/config-source" -cf "$backup_file" sheepfold || exit 1
-		list_flags=-tf
-		read_flags=-xOf
-	fi
-	chmod 600 "$backup_file" || exit 1
-	# Проверяется собственный архив одного файла, не включается импорт.
-	# Извлечение в stdout не применяет пути/права архива к роутеру.
-	members="$(tar "$list_flags" "$backup_file")" || exit 1
-	[ "$members" = sheepfold ] || exit 1
-	tar "$read_flags" "$backup_file" sheepfold >"$work/config-verified" || exit 1
-	cmp -s "$work/config-source/sheepfold" "$work/config-verified" || exit 1
-	[ ! -L /etc/config/sheepfold ] || exit 1
-	cmp -s /etc/config/sheepfold "$work/config-source/sheepfold" || exit 1
-	printf '%s' "$backup_file"
-)
+create_config_backup() {
+	# Ревью r323: сырой UCI содержит секреты и одноразовые данные. Права 0600
+	# и HTTPS не заменяют принятый экспорт v2/AES-GCM. До подключения общего
+	# безопасного экспорта автоматическое создание полной копии запрещено.
+	printf 'Sheepfold: automatic configuration backup is unavailable; use Settings export.\n' >&2
+	return 78
+}
 
 # Отказ диагностики не должен мешать вернуть исходную ошибку подготовки.
 drive_archive_prepare_error() {
@@ -1552,87 +1527,13 @@ cmd_push_events() (
 	printf '%s\n' "$verify_json"
 )
 
-cmd_archive_push() (
-	local logs_id backups_id quota quota_bytes pushed errors archive events_copy backup_file work stamp snapshot_status
-	# Старый флаг authorized не доказывает текущий доступ и не является
-	# согласием на загрузку. Его задаёт log_storage; токен проверит поиск папок.
-	require_tooling || return 1
-	drive_context_begin || return 1
-
-	umask 077
-	work="$(drive_workdir)" || { drive_archive_prepare_error backup_prepare_failed; return 1; }
-	trap 'rm -rf "$work"' EXIT
-	trap 'exit 1' HUP INT TERM
-	# Проверяем local backup до удаления отправленных RAM-архивов и до
-	# облачных действий: подавленный tar-отказ раньше давал ложный ok=true.
-	backup_file="$(create_config_backup "$work")" || {
-		drive_archive_prepare_error backup_prepare_failed
-		return 1
-	}
-	stamp="$(drive_archive_stamp)" || { drive_archive_prepare_error events_snapshot_failed; return 1; }
-	events_copy="$work/events-$stamp.log"
-	snapshot_status=0
-	drive_events_snapshot "$events_copy" || snapshot_status=$?
-	case "$snapshot_status" in
-		0) ;;
-		4) events_copy='' ;;
-		*) drive_archive_prepare_error events_snapshot_failed; return 1 ;;
-	esac
-	drive_context_check || return 1
-	cache_folder_ids || return 1
-	logs_id="$(folder_id_from_cache logs)" || return 1
-	backups_id="$(folder_id_from_cache backups)" || return 1
-	quota="$(quota_mb)" || return 1
-	quota_bytes=$((quota * 1024 * 1024))
-
-	pushed=0
-	errors=0
-
-	for archive in "$RAM_ARCHIVE_DIR"/*.tar.gz "$RAM_ARCHIVE_DIR"/*.tar; do
-		[ -f "$archive" ] || continue
-		if upload_and_verify "$logs_id" "$archive" "$(basename "$archive")" >/dev/null 2>&1; then
-			drive_context_check || return 1
-			rm -f "$archive"
-			pushed=$((pushed + 1))
-		else
-			drive_context_check || return 1
-			errors=$((errors + 1))
-		fi
-	done
-
-	if [ -n "$events_copy" ]; then
-		if upload_and_verify "$logs_id" "$events_copy" "$(basename "$events_copy")" >/dev/null 2>&1; then
-			drive_context_check || return 1
-			pushed=$((pushed + 1))
-		else
-			drive_context_check || return 1
-			errors=$((errors + 1))
-		fi
-	fi
-
-	if upload_and_verify "$backups_id" "$backup_file" "$(basename "$backup_file")" >/dev/null 2>&1; then
-		drive_context_check || return 1
-		pushed=$((pushed + 1))
-	else
-		drive_context_check || return 1
-		errors=$((errors + 1))
-	fi
-
-	drive_context_check || return 1
-	if ! prune_remote_logs "$quota_bytes"; then
-		errors=$((errors + 1))
-	fi
-	drive_context_check || return 1
-
-	if [ "$errors" -gt 0 ]; then
-		write_sync_status archive-push false "completed with errors"
-		printf '{"ok":false,"pushed":%d,"errors":%d}\n' "$pushed" "$errors"
-		return 1
-	fi
-
-	write_sync_status archive-push true "archive push completed"
-	printf '{"ok":true,"pushed":%d,"errors":0}\n' "$pushed"
-)
+cmd_archive_push() {
+	# Не отправляем и старую очередь: происхождение tar-файлов не подтверждено.
+	# Это явный отказ всего архивного прохода, а не успех без резервной копии.
+	# Прямая отправка снимка журнала через push-events остаётся отдельной командой.
+	printf '{"ok":false,"error":"config_backup_unavailable"}\n'
+	return 1
+}
 
 cmd_sync_status() {
 	if [ -r "$SYNC_STATUS_FILE" ]; then

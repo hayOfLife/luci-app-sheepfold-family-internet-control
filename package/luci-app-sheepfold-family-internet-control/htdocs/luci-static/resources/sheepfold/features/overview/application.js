@@ -328,6 +328,8 @@ var timeSettings = settingsTimeModel.create({
 			timeoutMessage: _('Could not save router time settings.')
 		}).then(function (result) {
 			return environment.ensureOk(result, _('Could not save router time settings.'));
+		}).catch(function (error) {
+			throw settingsTimeModel.normalizeSaveError(error, routerBackend.parseKeyValues);
 		});
 	}
 });

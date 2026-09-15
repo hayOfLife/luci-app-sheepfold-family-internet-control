@@ -159,7 +159,7 @@ describe('LuCI persistence adapters §persist1', () => {
     const current = { configs: { sheepfold: [{ name: 'global', type: 'sheepfold', options: { token: 'secret' } }], dhcp: [], wireless: [] } };
     const imported = { configs: { sheepfold: [{ name: 'global', type: 'sheepfold', options: { token: '[secret]', language: 'ru' } }], dhcp: [], wireless: [] } };
     const adapter = loadModule('sheepfold/features/settings/backup-persistence.js').create({
-      model: { secretPlaceholder: '[secret]', secretOption: (name) => /password|token|secret|key/i.test(name), validate: (value) => value, prepareRestore: (value) => ({ payload: value, routerTransfer: false }) },
+      model: { build: loadModule('sheepfold/features/settings/backup.js').build, secretPlaceholder: '[secret]', secretOption: (name) => /password|token|secret|key/i.test(name), validate: (value) => value, prepareRestore: (value) => ({ payload: value, routerTransfer: false }) },
       uci: { set: (...args) => writes.push(args), unset() {}, remove() {} },
       persistence: { sections: (config) => config === 'sheepfold' ? [{ '.name': 'global', '.type': 'sheepfold', token: 'secret' }] : [], ensureSection: (_c, _t, name) => name,
         mutate: async (_configs, stage) => ({ stageResult: stage() }) }, refreshRuntime: async () => { throw new Error('refresh failed'); },

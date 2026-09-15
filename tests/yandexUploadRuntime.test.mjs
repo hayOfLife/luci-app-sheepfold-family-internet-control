@@ -1,8 +1,9 @@
 /*
- * Исполняет настоящий Yandex uploader/verify и архивный caller в .build.
+ * Исполняет настоящий Yandex uploader/verify напрямую в .build.
  * HTTP/UCI синтетические; cp/cmp/wc, файлы и права реальные. Искусственный
  * отказ обязан оставить trace; все файлы удаляются после теста. Это не
  * доказательство поддержки HEAD Яндексом, checksum, native UCI, quota/restore.
+ * Успешная отправка сырого архива больше не является допустимым caller-контрактом.
  */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -11,6 +12,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { shellTestPath } from '../tools/quality/testEnvironment.mjs';
+import { runtimeTimeout } from './helpers/runtimeProcess.mjs';
 
 const repo=resolve(import.meta.dirname,'..');
 const runtime=join(repo,'package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold');
@@ -24,7 +26,7 @@ function fixture(t,opts={}) {
   const parent=join(repo,'.build','yandex-upload-fixtures'); mkdirSync(parent,{recursive:true});
   const root=mkdtempSync(join(parent,'case-')),bin=join(root,'bin'),ram=join(root,'ram'),config=join(root,'config');
   for(const dir of [bin,ram,config]) mkdirSync(dir);
-  const path=p=>shellTestPath(p,{cwd:repo,allowedRoot:root});
+  const path=p=>shellTestPath(p,{cwd:root,allowedRoot:root});
   const queue=join(ram,'.private','archive'); mkdirSync(queue,{recursive:true});
   const sourceFile=join(queue,'pending.tar');
   const content=Object.hasOwn(opts,'content')?Buffer.from(opts.content,'hex'):payload;
@@ -136,7 +138,7 @@ sys.exit(subprocess.run([real[kind],*args]).returncode)
     else if(action==='verify')command=`exec sh ${quote(path(join(bin,'entry')))} verify ${quote(path(sourceFile))} ${quote(remote)}`;
     else if(action==='metadata')command=`. ${quote(path(join(bin,'library')))}; remote_file_bytes ${quote(remote)}`;
     else command=`. ${quote(path(join(bin,'library')))}; ${action==='direct'?'upload_file':action==='metadata'?'remote_file_bytes':'upload_and_verify'} ${quote(path(sourceFile))} ${quote(remote)}`;
-    const r=spawnSync('sh',['-c',`export PATH=${quote(path(bin))}:"$PATH"; ${command}`],{cwd:root,env,encoding:'utf8',timeout:20000});assert.ifError(r.error);
+    const r=spawnSync('sh',['-c',`export PATH=${quote(path(bin))}:"$PATH"; ${command}`],{cwd:root,env,encoding:'utf8',timeout:runtimeTimeout(20000)});assert.ifError(r.error);
     results.push({action,remote,status:r.status,stdout:r.stdout,stderr:r.stderr});return r;
   };
   const trace=()=>readFileSync(tracePath,'utf8').split('\n').filter(Boolean).map(JSON.parse);
@@ -186,6 +188,6 @@ describe('Snapshot ownership and complete archive caller',()=>{
   it('rejects symbolic source',{skip:!posix},t=>{const f=fixture(t,{sourceLink:true}),r=f.run();assert.notEqual(r.status,0);assert.equal(parsed(r).error,'local_missing');assert.deepEqual(methods(f),[]);});
   for(const change of ['put','head'])it(`keeps source changed during ${change}`,t=>{const f=fixture(t,{change}),r=f.run();assert.notEqual(r.status,0);assert.equal(parsed(r).error,'source_changed');assert.ok(f.trace().some(e=>e.changed===change));assert.deepEqual(readFileSync(f.sourceFile),Buffer.alloc(f.content.length,'X'));clean(f);});
   for(const credentialChange of ['put','head'])it(`does not confirm upload after credential change at ${credentialChange}`,t=>{const f=fixture(t,{credentialChange}),r=f.run();assert.notEqual(r.status,0);assert.equal(parsed(r).ok,false);assert.ok(f.trace().some(e=>e.credentialChange===credentialChange));assert.deepEqual(readFileSync(f.sourceFile),f.content);if(credentialChange==='put')assert.deepEqual(methods(f),['PUT']);clean(f);});
-  it('archive-push removes queue only after complete verified upload',t=>{const f=fixture(t),r=f.run('archive');assert.equal(r.status,0,r.stderr);assert.equal(parsed(r).ok,true);assert.equal(parsed(r).pushed,2);assert.ok(!existsSync(f.sourceFile));assert.equal(methods(f).filter(v=>v==='PUT').length,2);assert.equal(methods(f).filter(v=>v==='HEAD').length,2);clean(f);});
-  for(const opts of [{remoteSize:1},{putExit:18},{headHttp:500},{change:'head'}])it(`archive preserves queue on ${JSON.stringify(opts)}`,t=>{const f=fixture(t,opts),r=f.run('archive');assert.notEqual(r.status,0);assert.equal(parsed(r).ok,false);assert.ok(existsSync(f.sourceFile));clean(f);});
+
+
 });

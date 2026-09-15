@@ -117,6 +117,8 @@ function create(deps) {
 				get: deps.globalValue,
 				icon: deps.icon,
 				routerControl: deps.run,
+				command: deps.actions.execute,
+				ensureOk: deps.actions.ensureOk,
 				parseOutput: deps.parseKeyValues,
 				errorText: deps.errorText,
 				notify: deps.notify,

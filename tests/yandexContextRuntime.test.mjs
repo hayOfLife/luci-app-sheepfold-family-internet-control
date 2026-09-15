@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
+import { runtimeTimeout, completedProcess } from './helpers/runtimeProcess.mjs';
 import { shellTestPath } from '../tools/quality/testEnvironment.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
@@ -122,8 +123,8 @@ fail('unknown-tool')
   const results = [];
   const run = (action = 'archive-push') => {
     const cmd = action === 'quota' ? `. ${quote(path(join(bin, 'library')))}; quota_mb` : `exec sh ${quote(path(join(bin, 'entry')))} ${quote(action)}`;
-    const r = spawnSync('sh', ['-c', `export PATH=${quote(path(bin))}:"$PATH"; ${cmd}`], { cwd: root, env, encoding: 'utf8', timeout: 20000 });
-    assert.ifError(r.error); results.push({ action, status: r.status, stdout: r.stdout, stderr: r.stderr }); return r;
+    const r = spawnSync('sh', ['-c', `export PATH=${quote(path(bin))}:"$PATH"; ${cmd}`], { cwd: repo, env, encoding: 'utf8', timeout: runtimeTimeout(20000) });
+    completedProcess(r, 'Yandex context fixture'); results.push({ action, status: r.status, stdout: r.stdout, stderr: r.stderr }); return r;
   };
   const events = () => readFileSync(tracePath, 'utf8').split('\n').filter(Boolean).map(JSON.parse);
   const saved = () => JSON.parse(readFileSync(statePath, 'utf8'));
@@ -165,51 +166,34 @@ describe('Yandex quota setting boundary', () => {
     assert.equal(parsed(r).state, 'error'); assert.equal(parsed(r).free_pct, 0); assert.equal(parsed(r).quota_mb, 0);
     assert.ok(f.events().some(e => e.fault === 'quota-read')); noMutationRequests(f);
   });
-  it('archive stops before mutation when quota cannot be read', t => {
-    const f = fixture(t, { quotaFault: true }), r = f.run(); assert.notEqual(r.status, 0); assert.equal(parsed(r).error, 'quota_unavailable');
-    assert.ok(f.events().some(e => e.fault === 'quota-read')); noMutationRequests(f); assert.ok(f.archives.every(existsSync));
+  it('quota read still fails independently while the privacy gate stops archive first', t => {
+    const f = fixture(t, { quotaFault: true }), quota = f.run('quota');
+    assert.notEqual(quota.status, 0); assert.equal(quota.stdout, '');
+    assert.ok(f.events().some(e => e.fault === 'quota-read'), 'quota fault actually reached');
+    const before = f.events().length, r = f.run();
+    assert.notEqual(r.status, 0); assert.equal(parsed(r).error, 'config_backup_unavailable');
+    assert.ok(!f.events().slice(before).some(e => e.fault === 'quota-read'), 'archive stops before quota');
+    assert.equal(requests(f).length, 0); assert.ok(f.archives.every(existsSync));
   });
-  it('archive accepts a genuinely absent quota without changing settings', t => {
-    const f = fixture(t, { noQuota: true }), r = f.run(); assert.equal(r.status, 0, r.stderr); assert.equal(parsed(r).ok, true); assert.equal(f.saved().cloud.quota_mb, undefined);
+  it('absent quota keeps its default but does not authorize a raw archive', t => {
+    const f = fixture(t, { noQuota: true }), quota = f.run('quota');
+    assert.equal(quota.status, 0, quota.stderr); assert.equal(quota.stdout, '500');
+    const r = f.run(); assert.notEqual(r.status, 0); assert.equal(parsed(r).error, 'config_backup_unavailable');
+    assert.equal(f.saved().cloud.quota_mb, undefined); assert.equal(requests(f).length, 0);
+    assert.ok(f.archives.every(existsSync));
   });
 });
 
 describe('Yandex command-wide destination context', () => {
-  it('preserves ordinary complete archive upload', t => {
-    const f = fixture(t), r = f.run(); assert.equal(r.status, 0, r.stderr); assert.equal(parsed(r).pushed, 3); assert.equal(parsed(r).ok, true);
-    assert.ok(f.archives.every(p => !existsSync(p))); assert.equal(requests(f).filter(e => e.method === 'PUT').length, 3);
-    assert.ok(requests(f).every(e => e.auth === 'synthetic-parent:synthetic-old-password'));
-  });
-  for (const changeField of ['login', 'password', 'root_folder']) {
-    for (const changeAt of ['probe', 'mkcol-first', 'mkcol-last', 'put-first', 'head-first']) {
-      it(`archive stops after ${changeField} changes at ${changeAt}`, t => {
-        const f = fixture(t, { changeField, changeAt }), r = f.run(); assert.ok(f.saved().mutated, 'chosen change point was reached');
-        assert.notEqual(r.status, 0); assert.equal(parsed(r).ok, false); assert.ok(f.archives.every(existsSync), 'unconfirmed local archives survive');
-        const trace = f.events(), index = trace.findIndex(e => e.changeAt === changeAt);
-        assert.ok(!trace.slice(index + 1).some(e => e.method), 'no later request may use a stale destination');
-        assert.equal(JSON.parse(readFileSync(join(f.ram, '.yandex-sync-status.json'), 'utf8')).ok, false);
-      });
-    }
-  }
+
+
   for (const changeAt of ['mkcol-first', 'put-first', 'head-first']) it(`push-events stops after root changes at ${changeAt}`, t => {
     const f = fixture(t, { events: true, changeAt, changeField: 'root_folder' }), r = f.run('push-events');
     assert.ok(f.saved().mutated); assert.notEqual(r.status, 0); assert.equal(parsed(r).ok, false);
     const es = f.events(), index = es.findIndex(e => e.changeAt === changeAt); assert.ok(!es.slice(index + 1).some(e => e.method));
     assert.equal(readFileSync(join(f.ram, 'events.log'), 'utf8'), 'synthetic journal\n');
   });
-  it('a completed earlier upload is not misreported as rolled back after a late change', t => {
-    const f = fixture(t, { changeAt: 'head-final' }), r = f.run(); assert.ok(f.saved().mutated); assert.notEqual(r.status, 0); assert.equal(parsed(r).ok, false);
-    assert.ok(f.archives.every(p => !existsSync(p)), 'earlier verified archives were already removed');
-    assert.equal(requests(f).filter(e => e.method === 'PUT').length, 3, 'already sent data is not undone');
-    const es = f.events(), index = es.findIndex(e => e.changeAt === 'head-final'); assert.ok(!es.slice(index + 1).some(e => e.method));
-  });
-  it('failed settings read does not permit a new command context', t => {
-    const f = fixture(t, { showFault: true }), r = f.run(); assert.notEqual(r.status, 0); assert.equal(parsed(r).ok, false);
-    assert.ok(f.events().some(e => e.fault === 'cloud-show')); assert.equal(requests(f).length, 0); assert.ok(f.archives.every(existsSync));
-  });
-  it('unselected backend remains a skip without cloud reads', t => {
-    const f = fixture(t, { storage: 'ram', showFault: true }), r = f.run(); assert.equal(r.status, 0); assert.equal(r.stdout, ''); assert.equal(requests(f).length, 0); assert.ok(!f.events().some(e => e.fault));
-  });
+
   it('a confirmed absent journal remains a skip', t => {
     const f = fixture(t, { showFault: true }), r = f.run('push-events'); assert.equal(r.status, 0); assert.equal(r.stdout, ''); assert.equal(requests(f).length, 0);
   });
@@ -217,22 +201,8 @@ describe('Yandex command-wide destination context', () => {
 
 // HTTP-модель меняет только global.log_storage; cloud-реквизиты остаются прежними.
 describe('Yandex selected storage boundary', () => {
-  for (const changeAt of ['probe', 'mkcol-first', 'mkcol-last', 'put-first', 'head-first']) {
-    it(`stops archive when storage becomes RAM at ${changeAt}`, t => {
-      const f = fixture(t, { changeAt, changeField: 'log_storage' }), r = f.run();
-      assert.ok(f.saved().mutated, 'mutation reached'); assert.notEqual(r.status, 0);
-      assert.equal(parsed(r).ok, false); assert.ok(f.archives.every(existsSync));
-      const events = f.events(), at = events.findIndex(e => e.changeAt === changeAt);
-      assert.ok(!events.slice(at + 1).some(e => e.method), 'no later HTTP after backend switch');
-      assert.equal(f.saved().storage, 'ram');
-      assert.equal(JSON.parse(readFileSync(join(f.ram, '.yandex-sync-status.json'), 'utf8')).ok, false);
-    });
-  }
-  for (const changeValue of ['google_drive', null, 'invalid']) it(`does not fall back after storage becomes ${changeValue}`, t => {
-    const f = fixture(t, { changeAt: 'mkcol-last', changeField: 'log_storage', changeValue }), r = f.run();
-    assert.ok(f.saved().mutated); assert.notEqual(r.status, 0); assert.ok(f.archives.every(existsSync));
-    assert.ok(!requests(f).some(e => e.method === 'PUT')); assert.equal(f.saved().storage, changeValue);
-  });
+
+
   for (const changeAt of ['mkcol-first', 'put-first', 'head-first']) it(`stops journal sender after backend switch at ${changeAt}`, t => {
     const f = fixture(t, { events: true, changeAt, changeField: 'log_storage' }), r = f.run('push-events');
     assert.ok(f.saved().mutated); assert.notEqual(r.status, 0); assert.equal(parsed(r).ok, false);
@@ -240,21 +210,5 @@ describe('Yandex selected storage boundary', () => {
     assert.ok(!events.slice(at + 1).some(e => e.method));
     assert.equal(readFileSync(join(f.ram, 'events.log'), 'utf8'), 'synthetic journal\n');
   });
-  for (const storagePartial of ['', 'yandex_disk']) it(`rejects failed selection reread with partial ${JSON.stringify(storagePartial)}`, t => {
-    const f = fixture(t, { changeAt: 'mkcol-last', changeField: 'block_all', storageFaultAfterMutation: true, storagePartial }), r = f.run();
-    assert.ok(f.saved().mutated); assert.ok(f.events().some(e => e.fault === 'storage-read'));
-    assert.notEqual(r.status, 0); assert.ok(f.archives.every(existsSync)); assert.ok(!requests(f).some(e => e.method === 'PUT'));
-  });
-  it('does not treat an unrelated global setting as a backend switch', t => {
-    const f = fixture(t, { changeAt: 'mkcol-last', changeField: 'block_all' }), r = f.run();
-    assert.ok(f.saved().mutated); assert.equal(f.saved().block_all, '1'); assert.equal(r.status, 0, r.stderr);
-    assert.equal(parsed(r).ok, true); assert.ok(f.archives.every(p => !existsSync(p)));
-  });
-  it('does not promise rollback for archives completed before a late backend switch', t => {
-    const f = fixture(t, { changeAt: 'head-final', changeField: 'log_storage' }), r = f.run();
-    assert.ok(f.saved().mutated); assert.notEqual(r.status, 0); assert.equal(parsed(r).ok, false);
-    assert.ok(f.archives.every(p => !existsSync(p)), 'previous completed transfers are not restored');
-    const events = f.events(), at = events.findIndex(e => e.changeAt === 'head-final');
-    assert.ok(!events.slice(at + 1).some(e => e.method));
-  });
+
 });

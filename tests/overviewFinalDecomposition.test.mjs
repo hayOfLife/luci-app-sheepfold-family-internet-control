@@ -1,3 +1,6 @@
+/* Загружает композицию LuCI в VM с явными моделями зависимостей, без роутера.
+ * Проверяет подключения и контракты модулей; DOM-модель не доказывает отрисовку
+ * браузера, сетевые операции или сохранение данных настоящим UCI. */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -89,7 +92,7 @@ function originalModuleStubs() {
   const draft = {
     reset() {}, has() { return false; }, get() { return ''; }, set() {}, setSection() {}, setMany() {},
     registerSaver() {}, dirtySavers() { return []; }, isDirty() { return false; }, snapshot() { return {}; },
-    clearOptions() {}, setSaving() {}, isSaving() { return false; },
+    clearOptions() {}, acceptOptions() {}, setSaving() {}, isSaving() { return false; },
   };
   return {
     'sheepfold.i18n': {

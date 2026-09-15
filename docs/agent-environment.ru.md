@@ -4,6 +4,31 @@
 
 Важно: этот документ в первую очередь про следующий чат Codex Desktop на компьютере пользователя с Windows. Для GitHub Actions, WSL или обычного Linux/macOS окружения смысл проверок тот же, но команды установки, пути и доступ к Android SDK будут отличаться.
 
+## Исправление отдельных runtime-стендов после ревью r323
+
+В затронутых fixture используется `tests/helpers/runtimeProcess.mjs`.
+Linux/POSIX сохраняет прежние лимиты 15/20 секунд на дочернюю shell-команду;
+Windows получает не менее 120 секунд. Только для теста можно задать целое
+`SHEEPFOLD_TEST_PROCESS_TIMEOUT_MS` от 1 до 600000. Внешний per-file runner
+и тайм-ауты продукта не менялись. Большой лимит не является замером роутера.
+
+Ошибка запуска, `ETIMEDOUT` или завершение сигналом выводятся до проверки
+HTTP/JSON. Ненулевой exit самого продукта не превращается в исключение стенда:
+отрицательные сценарии обязаны продолжать проверять этот результат.
+
+Fixture ротации и Google Drive проверяют наличие flock. На Linux/POSIX отсутствие
+утилиты — явный отказ инфраструктуры. При её отсутствии в Windows допускается
+**только последовательная тестовая модель**; native concurrency/permissions/link
+сценарии сохраняют Linux gate и видимые пропуски. Модель не поставляется в пакет.
+
+Все shell-пути `yandexContextRuntime` разрешаются относительно того же `repo`,
+из которого запускается shell. В `yandexDiskRuntime` используется `work`, а в
+Sync/Upload/Download — корень fixture; `shellTestPath` должен получать именно этот
+cwd. Иначе Windows-путь повторяет `.build/...` внутри уже выбранного каталога.
+Для Python-модели UCI в timeSaveConfirmation запись выполняется с `newline='\n'`:
+автоматический CRLF на Windows не является изменением параметра роутера.
+Результаты Windows-прогона и границы — [принятие r324](review-r323-acceptance.ru.md).
+
 ## Где находится репозиторий
 
 Не выводить расположение актуальной копии из старого чата. Из выбранного checkout:
@@ -88,6 +113,14 @@ helper устанавливает fixture-bin уже внутри `sh -c` и т�
 путь имеет вид `/c/...` и может быть недоступен в sandbox. Python выбирается через
 `PYTHON_EXECUTABLE` и запускается в UTF-8. Не заменять это прямым `python3` на
 Windows и не передавать Windows-путь с обратными слешами в сгенерированный shell.
+
+Отдельная ловушка Google Drive fixture: `PYTHONUTF8=1` вместе с
+`PYTHONIOENCODING=utf-8` нужны и для чтения файлов, и для stdin/stdout модели.
+Одной `encoding: 'utf8'` у Node недостаточно. В текущем Git Bash буквальный CR
+перед LF исчезает при разборе `eval`, даже внутри кавычек; jshn-модель выводит
+этот символ через `printf`, сохраняя исходный assertion точного имени.
+Не удалять CR или кириллицу из ожидаемых данных ради зелёного результата.
+Проверка и точные команды: [принятие r324](review-r323-acceptance.ru.md).
 
 Канонический полный runner даёт одному файлу 1800 секунд на native Windows и
 720 секунд на POSIX. Переменная `SHEEPFOLD_TEST_TIMEOUT_SECONDS` (60–3600)
@@ -348,7 +381,9 @@ find /usr/libexec/sheepfold -type f -exec chmod 0755 {} +
 Если изменение должно попасть в новый пакет для роутера, подними:
 
 - `PKG_RELEASE` в `package/luci-app-sheepfold-family-internet-control/Makefile`;
-- `option ui_asset_version` в `package/luci-app-sheepfold-family-internet-control/root/etc/config/sheepfold`.
+- значение выводится из Makefile и записывается postinst; bootstrap находится в
+  `package/luci-app-sheepfold-family-internet-control/root/usr/share/sheepfold/sheepfold.uci.defaults`.
+  Готового `/etc/config/sheepfold` в payload нет, и создавать его ради версии нельзя.
 
 Тест `tests/luciAssetVersioning.test.mjs` проверяет, что они синхронизированы.
 

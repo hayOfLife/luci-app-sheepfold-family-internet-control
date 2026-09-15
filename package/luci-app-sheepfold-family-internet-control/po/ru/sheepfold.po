@@ -5023,3 +5023,42 @@ msgstr "Не удалось подтвердить домашнюю сеть. О
 
 msgid "Could not read the home network. Reload settings."
 msgstr "Не удалось проверить домашнюю сеть. Откройте настройки заново."
+
+msgid "Could not create the backup file. Please try again."
+msgstr "Не удалось создать файл резервной копии. Попробуйте ещё раз."
+
+msgid "The import result could not be confirmed. Reload the page and check the router settings before trying again."
+msgstr "Не удалось подтвердить результат импорта. Обновите страницу и проверьте настройки роутера перед повторной попыткой."
+
+msgid "Settings were imported, but the page could not be refreshed. Reload this page before making more changes."
+msgstr "Настройки импортированы, но обновить страницу не удалось. Обновите её перед дальнейшими изменениями."
+
+#. §cfgbak1: обнаруженный конфликт до первого изменения импорта.
+msgid "Router settings changed while the import was waiting. No backup was applied. Reload the page and check the settings before importing again."
+msgstr "Пока импорт ожидал выполнения, настройки роутера изменились. Резервная копия не применена. Обновите страницу и проверьте настройки перед повторным импортом."
+
+msgid "Messenger settings have unsaved changes. Press Save before testing the connection."
+msgstr "Настройки мессенджера изменены. Нажмите «Сохранить» перед проверкой подключения."
+
+msgid "Could not read saved messenger settings. Refresh the page before trying again."
+msgstr "Не удалось прочитать сохранённые настройки мессенджера. Обновите страницу перед повторной попыткой."
+
+msgid "Wait for the test message to finish, then save messenger settings."
+msgstr "Дождитесь завершения отправки тестового сообщения, затем сохраните настройки мессенджера."
+
+msgid "Could not restart Sheepfold after saving messenger settings."
+msgstr "Настройки мессенджера сохранены, но перезапустить Sheepfold не удалось."
+
+msgid "Save messenger settings and select Telegram before sending a test message."
+msgstr "Перед отправкой тестового сообщения выберите Telegram и сохраните настройки мессенджера."
+
+#: sheepfold/features/overview/application.js
+msgid "Router time settings were saved, but NTP could not be restarted. Check the time service before relying on schedules."
+msgstr "Настройки времени сохранены, но службу синхронизации не удалось перезапустить. Проверьте время на роутере перед использованием расписаний."
+
+msgid "Router time settings could not be restored completely. Check the router configuration and recovery snapshots before saving again."
+msgstr "Не удалось полностью восстановить настройки времени. Проверьте настройки роутера и сохранённые аварийные копии перед повторным сохранением."
+
+#: htdocs/luci-static/resources/sheepfold/features/settings/time.js
+msgid "Could not read the router clock. Time settings were not changed. Check the router before trying again."
+msgstr "Не удалось прочитать часы роутера. Настройки времени не изменены. Проверьте роутер перед повторной попыткой."

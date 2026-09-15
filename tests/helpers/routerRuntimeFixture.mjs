@@ -7,6 +7,7 @@
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { runtimeTimeout, completedProcess } from './runtimeProcess.mjs';
 import { shellTestPath } from '../../tools/quality/testEnvironment.mjs';
 
 export const repoRoot = resolve(import.meta.dirname, '../..');
@@ -95,10 +96,10 @@ esac
     const commandArgs = ['-c',
       'PATH="$1:$PATH"; export PATH; shift; exec "$@"', 'sheepfold-router-fixture',
       shellPath(bin), shellPath(join(bin, name)), ...args];
-    return spawnSync(command, commandArgs, {
+    return completedProcess(spawnSync(command, commandArgs, {
       cwd: repoRoot,
       encoding: 'utf8',
-      timeout: 20000,
+      timeout: runtimeTimeout(20000),
       input: options.input || '',
       env: {
         ...process.env,
@@ -114,7 +115,7 @@ esac
         REMOTE_ADDR: testIp, REQUEST_METHOD: 'GET', QUERY_STRING: '', CONTENT_LENGTH: '0',
         ...options.env,
       },
-    });
+    }), `router fixture ${name}`);
   }
   return {
     root, bin, state, runtime, run, setValues, shellPath,
@@ -125,6 +126,7 @@ esac
 }
 
 export function parseCgi(result) {
+  completedProcess(result, 'CGI fixture');
   if (result.status !== 0) throw new Error(`CGI exit ${result.status}: ${result.stderr}`);
   const header = result.stdout.split(/\r?\n\r?\n/)[0];
   const text = result.stdout.slice(result.stdout.search(/\r?\n\r?\n/) + (result.stdout.includes('\r\n\r\n') ? 4 : 2));

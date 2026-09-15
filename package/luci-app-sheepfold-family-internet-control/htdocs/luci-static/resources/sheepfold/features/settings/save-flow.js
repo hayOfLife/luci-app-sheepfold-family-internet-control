@@ -28,11 +28,10 @@ function create(deps) {
 		return error;
 	}
 
-	function executeSave() {
-		var options = deps.draft.snapshot();
-		var savers = deps.draft.dirtySavers();
+	function executeSave(options, savers) {
 		var hasOptions = Object.keys(options).length > 0;
 		var persisted = false;
+		var optionsAccepted = false;
 		var completedSavers = [];
 
 		if (!hasOptions && !savers.length) {
@@ -47,13 +46,17 @@ function create(deps) {
 			return Promise.reject(validationError);
 		}
 
-		deps.draft.setSaving(true);
-		deps.updateButtons();
-
-		return (hasOptions ? deps.persistence.save(options) : Promise.resolve()).then(function () {
+		// Подключаем catch/finally до первого изменяющего callback: синхронный
+		// отказ persistence/UI не должен оставлять обе кнопки Save заблокированными.
+		return Promise.resolve().then(function () {
+			deps.draft.setSaving(true);
+			deps.updateButtons();
+			return hasOptions ? deps.persistence.save(options) : null;
+		}).then(function () {
 			if (hasOptions) {
 				persisted = true;
-				deps.draft.clearOptions();
+				optionsAccepted = true;
+				deps.draft.acceptOptions(options);
 			}
 			return hasOptions ? deps.applyRuntime(options) : null;
 		}).then(function () {
@@ -96,7 +99,12 @@ function create(deps) {
 			error.completedSpecialSavers = completedSavers.length;
 			error.totalSpecialSavers = savers.length;
 			if (error.persisted) {
-				deps.draft.clearOptions();
+				// Post-save ошибка не владеет вводом, сделанным во время runtime.
+				// Частично успешный общий saver принимает только свой снимок и один раз.
+				if (hasOptions && !optionsAccepted) {
+					optionsAccepted = true;
+					deps.draft.acceptOptions(options);
+				}
 				deps.notify(
 					_('Settings were saved, but some router services could not be refreshed.') + ' ' +
 						deps.errorText(error, ''),
@@ -113,22 +121,23 @@ function create(deps) {
 	}
 
 	function save() {
-		var mode;
-		var time;
-
 		if (currentSave)
 			return currentSave;
-		mode = deps.draft.has('wifi_auto_disable_mode') ?
-			deps.draft.get('wifi_auto_disable_mode') : deps.value('wifi_auto_disable_mode', 'never');
-		time = deps.draft.has('wifi_auto_disable_time') ?
-			deps.draft.get('wifi_auto_disable_time') : deps.value('wifi_auto_disable_time', '23:00');
 
 		currentSave = Promise.resolve().then(function () {
-			if ((deps.draft.has('wifi_auto_disable_mode') || deps.draft.has('wifi_auto_disable_time')) && mode === 'time')
-				return deps.confirmWifiAutoDisable(time).then(function (confirmed) {
-					return confirmed ? executeSave() : { changed: false, cancelled: true, persisted: false };
+			var options = deps.draft.snapshot();
+			var savers = deps.draft.dirtySavers();
+			var has = function (key) { return Object.prototype.hasOwnProperty.call(options, key); };
+			var mode = has('wifi_auto_disable_mode') ? options.wifi_auto_disable_mode : deps.value('wifi_auto_disable_mode', 'never');
+			var time = has('wifi_auto_disable_time') ? options.wifi_auto_disable_time : deps.value('wifi_auto_disable_time', '23:00');
+
+			// Подтверждение времени относится к этому снимку, не к изменившемуся
+			// во время диалога черновику. Поздние опции остаются для следующего Save.
+			if ((has('wifi_auto_disable_mode') || has('wifi_auto_disable_time')) && mode === 'time')
+				return Promise.resolve(deps.confirmWifiAutoDisable(time)).then(function (confirmed) {
+					return confirmed ? executeSave(options, savers) : { changed: false, cancelled: true, persisted: false };
 				});
-			return executeSave();
+			return executeSave(options, savers);
 		}).finally(function () { currentSave = null; });
 		return currentSave;
 	}

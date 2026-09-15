@@ -615,3 +615,16 @@ msgstr "管理员的所有手机会话已结束。"
 
 msgid "Could not terminate administrator sessions."
 msgstr "无法结束管理员会话。"
+
+msgid "Could not create the backup file. Please try again."
+msgstr "无法创建备份文件。请重试。"
+
+msgid "The import result could not be confirmed. Reload the page and check the router settings before trying again."
+msgstr "无法确认导入结果。请刷新页面并检查路由器设置，然后再重试。"
+
+msgid "Settings were imported, but the page could not be refreshed. Reload this page before making more changes."
+msgstr "设置已导入，但无法刷新页面。请先刷新此页面，再进行其他更改。"
+
+#. §cfgbak1: обнаруженный конфликт до первого изменения импорта.
+msgid "Router settings changed while the import was waiting. No backup was applied. Reload the page and check the settings before importing again."
+msgstr "等待导入期间，路由器设置已更改。备份尚未应用。请重新加载页面并检查设置，然后再次导入。"

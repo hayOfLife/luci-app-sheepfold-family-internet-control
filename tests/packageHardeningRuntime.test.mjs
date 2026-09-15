@@ -9,6 +9,8 @@ import assert from 'node:assert/strict';
 import { cpSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { shellTestPath } from '../tools/quality/testEnvironment.mjs';
+import { runtimeTimeout } from './helpers/runtimeProcess.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 const rootSource = join(process.env.SHEEPFOLD_HARDENING_TEST_SOURCE || repo, 'package/luci-app-sheepfold-family-internet-control/root');
@@ -21,7 +23,10 @@ function check(mutate = () => {}) {
     const runtime = join(root, 'usr/libexec/sheepfold');
     const edit = (name, change) => { const path = join(runtime, name); writeFileSync(path, change(readFileSync(path, 'utf8'))); };
     mutate({ root, runtime, edit });
-    const result = spawnSync('sh', [join(runtime, 'sheepfold-runtime-hardening'), root], { encoding: 'utf8', timeout: 15000 });
+    const shellPath = value => shellTestPath(value, { cwd: repo });
+    const result = spawnSync('sh', [shellPath(join(runtime, 'sheepfold-runtime-hardening')), shellPath(root)], {
+      cwd: repo, encoding: 'utf8', timeout: runtimeTimeout(15000),
+    });
     assert.ifError(result.error);
     return result;
   } finally { rmSync(root, { recursive: true, force: true }); }

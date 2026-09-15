@@ -9,6 +9,7 @@ import { describe, it } from 'node:test';
 import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { runtimeTimeout, completedProcess, prepareFixtureFlock } from './helpers/runtimeProcess.mjs';
 import { shellTestPath } from '../tools/quality/testEnvironment.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
@@ -48,6 +49,7 @@ function fixture(t) {
     put('uci', `#!/bin/sh\n[ "\${1:-}" != -q ] || shift\ncase "\${1:-}" in\nget) case "\${2:-}" in\n${cases}\n*) exit 1;; esac;;\nshow) printf '%s\\n' ${q(lines)};;\n*) exit 1;; esac\n`);
   }
   configure();
+  prepareFixtureFlock(put);
   put('logger', '#!/bin/sh\nexit 0\n');
   const env = {
     ...process.env, SHEEPFOLD_UCI_BIN: path(join(bin, 'uci')),
@@ -58,7 +60,7 @@ function fixture(t) {
   };
   const command = process.platform === 'win32' ? 'bash' : 'sh';
   const args = ['-c', 'PATH="$1:$PATH"; export PATH; shift; exec sh "$@"', 'rotation-fixture', path(bin), path(join(bin, 'sheepfold-maintenance')), 'rotate-log'];
-  const run = (extra = {}, task = 'rotate-log') => spawnSync(command, [...args.slice(0, -1), task], { cwd: repo, env: { ...env, ...extra }, encoding: 'utf8', timeout: 15000 });
+  const run = (extra = {}, task = 'rotate-log') => completedProcess(spawnSync(command, [...args.slice(0, -1), task], { cwd: repo, env: { ...env, ...extra }, encoding: 'utf8', timeout: runtimeTimeout(15000) }), 'rotation fixture');
   const fault = (name, predicate, body = 'exit 7') => {
     const real = spawnSync('sh', ['-c', `command -v ${name}`], { encoding: 'utf8' }).stdout.trim();
     assert.ok(real, `missing host ${name}`);

@@ -567,38 +567,13 @@ yandex_archive_stamp() (
 	printf '%s' "$stamp"
 )
 
-create_config_backup() (
-	work="${1:-}"
-	[ -n "$work" ] && [ -d "$work" ] && [ ! -L "$work" ] || exit 1
-	umask 077
-	[ -f /etc/config/sheepfold ] && [ ! -L /etc/config/sheepfold ] || exit 1
-	mkdir "$work/config-source" || exit 1
-	cp -p /etc/config/sheepfold "$work/config-source/sheepfold" || exit 1
-	chmod 600 "$work/config-source/sheepfold" || exit 1
-	cmp -s /etc/config/sheepfold "$work/config-source/sheepfold" || exit 1
-	stamp="$(yandex_archive_stamp)" || exit 1
-	backup_file="$work/sheepfold-config-$stamp.tar.gz"
-	if command -v gzip >/dev/null 2>&1; then
-		tar -C "$work/config-source" -czf "$backup_file" sheepfold || exit 1
-		list_flags=-tzf
-		read_flags=-xzOf
-	else
-		backup_file="${backup_file%.gz}"
-		tar -C "$work/config-source" -cf "$backup_file" sheepfold || exit 1
-		list_flags=-tf
-		read_flags=-xOf
-	fi
-	chmod 600 "$backup_file" || exit 1
-	# Проверяем свой архив до отправки, не включаем восстановление. Читаем в
-	# stdout: пути/права из архива не применяются к /etc/config или файловой системе.
-	members="$(tar "$list_flags" "$backup_file")" || exit 1
-	[ "$members" = sheepfold ] || exit 1
-	tar "$read_flags" "$backup_file" sheepfold >"$work/config-verified" || exit 1
-	cmp -s "$work/config-source/sheepfold" "$work/config-verified" || exit 1
-	[ ! -L /etc/config/sheepfold ] || exit 1
-	cmp -s /etc/config/sheepfold "$work/config-source/sheepfold" || exit 1
-	printf '%s' "$backup_file"
-)
+create_config_backup() {
+	# Ревью r323: сырой UCI содержит секреты и одноразовые данные. Права 0600
+	# и HTTPS не заменяют принятый экспорт v2/AES-GCM. До подключения общего
+	# безопасного экспорта автоматическое создание полной копии запрещено.
+	printf 'Sheepfold: automatic configuration backup is unavailable; use Settings export.\n' >&2
+	return 78
+}
 
 yandex_archive_prepare_error() {
 	printf '{"ok":false,"error":"%s","pushed":0,"errors":1}\n' "$1"
@@ -1065,98 +1040,14 @@ cmd_push_events() (
 	printf '%s\n' "$verify_json"
 )
 
-cmd_archive_push() (
-	yandex_transfer_begin || { yandex_transfer_error settings_unavailable; return 1; }
-	require_tooling || return 1
-	# Просмотр больше не записывает authorized. Явная отправка проверяет доступ
-	# сейчас, а не полагается на исторический флаг и не сохраняет чужой UCI.
-	probeResult="$(cmd_test)" || { printf '%s\n' "$probeResult"; return 1; }
-
-	root="$(normalize_root_folder)" || {
-		printf '{"ok":false,"error":"root_unavailable"}\n'
-		return 1
-	}
-	quota="$(quota_mb)" || { yandex_transfer_error quota_unavailable; return 1; }
-	quota_bytes=$((quota * 1024 * 1024))
-	# Подготовка всех обязательных локальных копий предшествует MKCOL/PUT и
-	# удалению отправленных RAM-архивов. Сбой tar не означает «копия не нужна».
-	umask 077
-	work="$(yandex_archive_workdir)" || { yandex_archive_prepare_error backup_prepare_failed; return 1; }
-	trap 'result=$?; trap - EXIT; rm -rf "$work" || printf "Sheepfold: Yandex work cleanup failed.\n" >&2; exit "$result"' EXIT
-	trap 'exit 1' HUP INT TERM
-	backup_file="$(create_config_backup "$work")" || {
-		yandex_archive_prepare_error backup_prepare_failed
-		return 1
-	}
-	stamp="$(yandex_archive_stamp)" || { yandex_archive_prepare_error events_snapshot_failed; return 1; }
-	events_copy="$work/events-$stamp.log"
-	snapshotStatus=0
-	yandex_events_snapshot "$events_copy" || snapshotStatus=$?
-	case "$snapshotStatus" in
-		0) ;;
-		4) events_copy='' ;;
-		*) yandex_archive_prepare_error events_snapshot_failed; return 1 ;;
-	esac
-	ensure_webdav_path "$root" || {
-		printf '{"ok":false,"error":"remote_prepare_failed"}\n'
-		return 1
-	}
-	ensure_webdav_path "$root/logs" || {
-		printf '{"ok":false,"error":"remote_prepare_failed"}\n'
-		return 1
-	}
-	ensure_webdav_path "$root/backups" || {
-		printf '{"ok":false,"error":"remote_prepare_failed"}\n'
-		return 1
-	}
-
-	pushed=0
-	errors=0
-
-	for archive in "$RAM_ARCHIVE_DIR"/*.tar.gz "$RAM_ARCHIVE_DIR"/*.tar; do
-		[ -f "$archive" ] || continue
-		yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; return 1; }
-		remote="${root}/logs/$(basename "$archive")"
-		if upload_and_verify "$archive" "$remote" >/dev/null 2>&1; then
-			yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; return 1; }
-			rm -f "$archive"
-			pushed=$((pushed + 1))
-		else
-			errors=$((errors + 1))
-		fi
-	done
-
-	yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; return 1; }
-	if [ -n "$events_copy" ]; then
-		remote="${root}/logs/$(basename "$events_copy")"
-		if upload_and_verify "$events_copy" "$remote" >/dev/null 2>&1; then
-			pushed=$((pushed + 1))
-		else
-			errors=$((errors + 1))
-		fi
-	fi
-
-	yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; return 1; }
-	remote="${root}/backups/$(basename "$backup_file")"
-	if upload_and_verify "$backup_file" "$remote" >/dev/null 2>&1; then
-		pushed=$((pushed + 1))
-	else
-		errors=$((errors + 1))
-	fi
-
-	yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; return 1; }
-	prune_remote_logs "$root" "$quota_bytes" || true
-	# Старые ошибки XML/prune остаются отдельными. Но подавление их exit не
-	# разрешает подтвердить команду после замеченной смены её назначения.
-	yandex_transfer_settings_ok || { yandex_transfer_error settings_changed; return 1; }
-
-	if [ "$errors" -gt 0 ]; then
-		printf '{"ok":false,"pushed":%d,"errors":%d}\n' "$pushed" "$errors"
-		return 1
-	fi
-
-	printf '{"ok":true,"pushed":%d,"errors":0}\n' "$pushed"
-)
+cmd_archive_push() {
+	# Не отправляем и старую очередь: происхождение tar-файлов не подтверждено.
+	# Результат сохранит существующий завершающий обработчик sender; никакого
+	# MKCOL/PUT/DELETE или удаления локальных архивов здесь больше нет.
+	# Прямая отправка журнала через push-events не отключена.
+	printf '{"ok":false,"error":"config_backup_unavailable"}\n'
+	return 1
+}
 
 yandex_sync_read() (
 	yandex_sync_path_ok || exit 1

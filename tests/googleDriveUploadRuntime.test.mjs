@@ -9,13 +9,12 @@
  * точках запроса и фиксирует, были ли дальнейшие запись/удаление исходника.
  * r308: полный проверенный учёт квоты, отказ очистки до подтверждения списка,
  * остановка после ошибки DELETE. Все удаляемые объекты существуют только в HTTP-модели.
- * r311: status не сохраняет UCI-черновик и не создаёт облачные папки;
- * явная архивная отправка проверяет текущие реквизиты, не старый флаг.
- * r312: реальные tar/cp/cmp проверяют config/events до отправки; закрытые
- * каталоги одной операции не подменяют оставленные файлы другой операции.
+ * status не сохраняет UCI-черновик и не создаёт облачные папки; push-events
+ * проверяет снимок журнала. Архивный caller закрыт отдельным cloudArchiveSafety.
  * r323: backend-switch и ошибка чтения выбранного хранилища проверяются
  * на полном sender с трассой, без изменения gdrive-реквизитов.
  * Подмена источника повторяет те же assertions на предыдущей версии.
+ * После тестов удаляются синтетические fixture; облачный API и restore не доказаны.
  */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -23,6 +22,7 @@ import { describe, it } from 'node:test';
 import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
+import { runtimeTimeout, completedProcess, prepareFixtureFlock } from './helpers/runtimeProcess.mjs';
 import { shellTestPath } from '../tools/quality/testEnvironment.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
@@ -254,8 +254,10 @@ else: sys.stdout.write(body)
 if '-w' in args: sys.stdout.write(http)
 sys.exit(exitcode)
 `);
-  // Моделируется только платформенная зависимость, не правило production.
+  // Git Bash удаляет буквальный CR перед LF при eval, поэтому модель выводит CR через printf
   put('jsonModel.py', `import sys,json,shlex
+def shell_quote(value):
+ return '''"$(printf '\\\\r')"'''.join(shlex.quote(part) for part in value.split('\\r'))
 try:
  if len(sys.argv)>1 and sys.argv[1]=='script':
   obj=json.loads(sys.argv[3]); assert isinstance(obj,dict); print('jsonData='+shlex.quote(sys.argv[3])); sys.exit(0)
@@ -273,7 +275,7 @@ try:
   assert isinstance(v,(dict,list)); print(shlex.quote(json.dumps(v))); sys.exit(0)
  if sys.argv[1]=='type': print('string' if isinstance(v,str) else 'boolean' if isinstance(v,bool) else 'int' if isinstance(v,int) else 'object' if isinstance(v,dict) else 'array' if isinstance(v,list) else 'null')
  else:
-  assert isinstance(v,(str,int)); print(shlex.quote(str(int(v)) if isinstance(v,bool) else str(v)))
+  assert isinstance(v,(str,int)); print(shell_quote(str(int(v)) if isinstance(v,bool) else str(v)))
 except (ValueError,KeyError,IndexError,AssertionError,TypeError): sys.exit(1)
 `);
   put('jshn', `#!/bin/sh\nexec python3 -S ${q(path(join(bin,'jsonModel.py')))} script "$@"\n`);
@@ -285,18 +287,23 @@ except (ValueError,KeyError,IndexError,AssertionError,TypeError): sys.exit(1)
     `json_add_string() { local encoded; encoded="$(printf '%s' "$jsonData" | python3 -S ${q(path(join(bin,'jsonModel.py')))} add string "$1" "$2")" || return 1; eval "jsonData=$encoded"; }\n` +
     `json_add_int() { local encoded; encoded="$(printf '%s' "$jsonData" | python3 -S ${q(path(join(bin,'jsonModel.py')))} add int "$1" "$2")" || return 1; eval "jsonData=$encoded"; }\n` +
     `json_dump() { printf '%s' "$jsonData" | python3 -S ${q(path(join(bin,'jsonModel.py')))} dump; }\n`);
+  prepareFixtureFlock(put);
+  // Python-модели читают JSON и stdin как UTF-8, независимо от Windows code page
+  const processEnv = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8',
+    GDRIVE_OPTIONS: path(settings), GDRIVE_TRACE: path(traceFile) };
   const run = (command = 'archive-push', args = []) => {
     const result = spawnSync(process.platform === 'win32' ? 'bash' : 'sh',
       ['-c', 'PATH="$1:$PATH"; export PATH; shift; exec sh "$@"', 'gdrive-fixture', path(bin), path(join(bin, 'sheepfold-google-drive')), command, ...args],
-      { cwd: repo, env: { ...process.env, GDRIVE_OPTIONS: path(settings), GDRIVE_TRACE: path(traceFile) }, encoding: 'utf8', timeout: 20000 });
+      { cwd: repo, env: processEnv, encoding: 'utf8', timeout: runtimeTimeout(20000) });
+    completedProcess(result, 'Google Drive fixture');
     results.push({ command, args, status: result.status, stdout: result.stdout, stderr: result.stderr });
     return result;
   };
   const runAsync = (command) => {
     const child=spawn('sh',[path(join(bin,'sheepfold-google-drive')),command],{
-      cwd:repo,env:{...process.env,PATH:`${bin}:${process.env.PATH}`,GDRIVE_OPTIONS:path(settings),GDRIVE_TRACE:path(traceFile)},stdio:['ignore','pipe','pipe']});
+      cwd:repo,env:{...processEnv,PATH:`${bin}:${process.env.PATH}`},stdio:['ignore','pipe','pipe']});
     let stdout='',stderr=''; child.stdout.on('data',(v)=>stdout+=v);child.stderr.on('data',(v)=>stderr+=v);
-    const timer=setTimeout(()=>child.kill('SIGKILL'),20000);timer.unref();
+    const timer=setTimeout(()=>child.kill('SIGKILL'),runtimeTimeout(20000));timer.unref();
     const finished=new Promise((resolveResult,reject)=>{
       child.once('error',(error)=>{clearTimeout(timer);reject(error);});
       child.once('close',(status)=>{clearTimeout(timer);resolveResult({status,stdout,stderr});});
@@ -315,8 +322,8 @@ except (ValueError,KeyError,IndexError,AssertionError,TypeError): sys.exit(1)
   const call = (name,args=[]) => {
     const main=readFileSync(join(bin,'sheepfold-google-drive'),'utf8');
     put('function-run',main.slice(0,main.indexOf('command_name="${1:-}"'))+'\n"$@"\n');
-    return spawnSync('sh',[path(join(bin,'function-run')),name,...args],{cwd:repo,
-      env:{...process.env,PATH:`${bin}:${process.env.PATH}`,GDRIVE_OPTIONS:path(settings),GDRIVE_TRACE:path(traceFile)},encoding:'utf8',timeout:20000});
+    return completedProcess(spawnSync('sh',[path(join(bin,'function-run')),name,...args],{cwd:repo,
+      env:{...processEnv,PATH:`${bin}:${process.env.PATH}`},encoding:'utf8',timeout:runtimeTimeout(20000)}), 'Google Drive helper fixture');
   };
   return { root, bin, ram, archive, configFile, path, put, run, runAsync, call, fault, cacheFile, authKey, folderKey, creds,
     update: (changes) => writeFileSync(settings, JSON.stringify({...JSON.parse(readFileSync(settings,'utf8')), ...changes})), trace: () => readFileSync(traceFile,'utf8').trim().split('\n').filter(Boolean).map((s) => JSON.parse(s)),
@@ -324,38 +331,6 @@ except (ValueError,KeyError,IndexError,AssertionError,TypeError): sys.exit(1)
 }
 function failed(r) { assert.ifError(r.error); assert.notEqual(r.status, 0, `false success: ${r.stdout} ${r.stderr}`); }
 function succeeded(r) { assert.ifError(r.error); assert.equal(r.status, 0, `${r.stdout} ${r.stderr}`); }
-
-describe('Google Drive independent upload evidence', () => {
-  it('keeps the archive when Drive reports a different size', (t) => {
-    const f=fixture(t,{remoteSize:1}); const r=f.run();
-    assert.ok(f.trace().some((v)=>v.kind==='upload'),'did not reach upload');
-    assert.ok(existsSync(f.archive),'original archive was lost'); failed(r);
-  });
-  it('checks Drive metadata before deleting a matching archive', (t) => {
-    const f=fixture(t); const r=f.run(); succeeded(r);
-    assert.ok(f.trace().some((v)=>v.kind==='metadata'),'no independent metadata read');
-    assert.equal(existsSync(f.archive),false);
-  });
-  for (const options of [
-    {metadataHttp:403},{metadataHttp:500},{metadataExit:7},
-    {metadataBody:'{"id":"file1","size":"25"'}, {metadataBody:'{"id":"file1"}'},
-    {metadataBody:'{"id":"file1","size":"unknown"}'},
-    {metadataBody:'{"id":"file1","size":-1}'},{metadataId:'other-file'},
-  ]) it(`preserves source after metadata failure ${JSON.stringify(options)}`, (t) => {
-    const f=fixture(t,options); const r=f.run();
-    assert.ok(f.trace().some((v)=>v.kind==='metadata'),'metadata check was never reached');
-    assert.ok(existsSync(f.archive)); failed(r);
-  });
-  it('does not delete a source changed while waiting for metadata', (t) => {
-    const f=fixture(t,{changeSource:true}); const r=f.run(); failed(r);
-    assert.equal(readFileSync(f.archive,'utf8'),'concurrent data\n');
-  });
-  for (const options of [{uploadHttp:500},{uploadExit:7}]) it(`preserves source on upload failure ${JSON.stringify(options)}`, (t)=>{
-    const f=fixture(t,options); const r=f.run();
-    assert.ok(f.trace().some((v)=>v.kind==='upload'),'upload was never reached');
-    failed(r); assert.ok(existsSync(f.archive));
-  });
-});
 
 describe('Google Drive upload preparation',()=>{
   it('does not run variable names as commands in push-events', (t)=>{
@@ -365,64 +340,13 @@ describe('Google Drive upload preparation',()=>{
   it('accepts the explicit CLI size check without running local_bytes', (t)=>{
     const f=fixture(t); const r=f.run('verify',[f.path(f.archive),String(payloadBytes)]); succeeded(r); assert.equal(JSON.parse(r.stdout).ok,true);
   });
-  it('prepares private multipart data for a new upload', {skip:!native},(t)=>{
-    const f=fixture(t,{newFile:true}); const r=f.run(); succeeded(r);
-    const upload=f.trace().find((v)=>v.kind==='upload'); assert.ok(upload); assert.equal(upload.mode & 0o777,0o600); assert.equal(upload.parentMode & 0o777,0o700);
-    assert.deepEqual(f.leftovers(),[]);
-  });
-  it('does not send multipart data after an input read failure', (t)=>{
-    const f=fixture(t,{newFile:true});
-    f.fault('cat', 'case "${1:-}" in */synthetic.tar|*/content) true;; *) false;; esac', "printf partial; exit 7");
-    const r=f.run(); assert.ok(f.trace().some((v)=>v.kind==='cat-fault'));
-    // A later config backup can upload; the failed archive body must not.
-    assert.ok(!f.trace().filter((v)=>v.kind==='upload').some((v)=>Buffer.from(v.bytes,'hex').toString().includes('partial')));
-    assert.ok(existsSync(f.archive)); failed(r); assert.deepEqual(f.leftovers(),[]);
-  });
+
+
 });
 
 
 describe('Google Drive checks preparation before remote mutation',()=>{
-  for (const name of ['cp','cmp','chmod','wc']) {
-    it(`preserves input and does not upload that source after ${name} failure`, (t)=>{
-      const f=fixture(t);
-      const predicate = name === 'cp' ? '[ "${1:-}" = '+q(f.path(f.archive))+' ]' :
-        name === 'cmp' ? 'case "${3:-}" in */content) true;; *) false;; esac' :
-        name === 'chmod' ? 'case "${2:-}" in */content) true;; *) false;; esac' : '[ "${1:-}" = -c ]';
-      f.fault(name,predicate,name === 'wc' ? 'printf 25; exit 7' : 'exit 7');
-      const r=f.run(); assert.ok(f.trace().some((v)=>v.kind===`${name}-fault`),'fault not injected');
-      failed(r); assert.ok(existsSync(f.archive));
-      // Config-backup теперь реален: его независимая отправка допустима.
-      // Проверяем именно отсутствие повреждённого source, не отсутствие всех uploads.
-      const uploads=f.trace().filter((v)=>v.kind==='upload');
-      assert.ok(uploads.every((v)=>v.remoteName.startsWith('sheepfold-config-')),'failed source reached upload');
-      assert.ok(uploads.every((v)=>!Buffer.from(v.bytes,'hex').equals(Buffer.from(payload))));
-      assert.deepEqual(f.leftovers(),[]);
-    });
-  }
-  it('does not remove another directory printed by failed mktemp', (t)=>{
-    const f=fixture(t); const recovery=join(f.ram,'recovery'); mkdirSync(recovery); writeFileSync(join(recovery,'copy'),'retain');
-    f.fault('mktemp',':',`printf '%s' ${q(f.path(recovery))}; exit 7`);
-    const r=f.run(); failed(r); assert.ok(f.trace().some((v)=>v.kind==='mktemp-fault'));
-    assert.equal(readFileSync(join(recovery,'copy'),'utf8'),'retain');
-    assert.ok(!f.trace().some((v)=>v.kind==='upload'));
-  });
-  it('cleans its workspace after failed multipart POST', (t)=>{
-    const f=fixture(t,{newFile:true,uploadHttp:500}); const r=f.run(); failed(r);
-    assert.ok(f.trace().some((v)=>v.kind==='upload')); assert.ok(existsSync(f.archive)); assert.deepEqual(f.leftovers(),[]);
-  });
-  for (const createBody of ['{bad', '{"id":"bad/id"}', '{"id":"file1"']) {
-    it(`preserves input after invalid creation response ${createBody}`, (t)=>{
-      const f=fixture(t,{newFile:true,createBody}); const r=f.run(); failed(r);
-      assert.ok(f.trace().some((v)=>v.kind==='upload')); assert.ok(existsSync(f.archive)); assert.deepEqual(f.leftovers(),[]);
-    });
-  }
-  it('does not use metadata when jshn disappears after the HTTP read', (t)=>{
-    const f=fixture(t,{removeJshnAtMetadata:true}); const r=f.run(); failed(r); assert.ok(existsSync(f.archive));
-    assert.ok(f.trace().some((v)=>v.kind==='metadata')); assert.deepEqual(f.leftovers(),[]);
-  });
-  it('normalizes a quoted decimal remote size', (t)=>{
-    const f=fixture(t,{metadataByName:{'synthetic.tar':'{ "id": "file1", "size": "00026" }'}}); succeeded(f.run()); assert.equal(existsSync(f.archive),false);
-  });
+
   it('accepts a zero-byte journal when the remote size is zero', (t)=>{
     const f=fixture(t,{remoteSize:0}); rmSync(f.archive); writeFileSync(join(f.ram,'events.log'),'');
     const r=f.run('push-events'); succeeded(r); assert.equal(JSON.parse(r.stdout).remote_bytes,0);
@@ -565,12 +489,7 @@ describe('Google Drive OAuth exchange and cache', () => {
     f.update({changeCredentialsDuringToken:true}); failed(f.run('test'));
     assert.ok(refreshes(f).length); assert.equal(existsSync(f.cacheFile),false);
   });
-  it('uses the newly selected credential token for the actual upload', (t)=>{
-    const f=fixture(t,{tokenBody:JSON.stringify(goodToken)});
-    f.update({credentials:{...f.creds,refresh_token:'new-account'}});
-    succeeded(f.run()); const uploaded=f.trace().find((v)=>v.kind==='upload'); assert.ok(uploaded);
-    assert.equal(uploaded.auth,`Authorization: Bearer ${goodToken.access_token}`);
-  });
+
   it('preserves the cache on an existing-cache read failure', (t)=>{
     const f=fixture(t); const before=readFileSync(f.cacheFile,'utf8');
     f.fault('cat',`[ "$1" = ${q(f.path(f.cacheFile))} ]`, 'printf partial; exit 1');
@@ -585,89 +504,6 @@ describe('Google Drive OAuth exchange and cache', () => {
 // r306: настоящий caller + записанный HTTP. Ошибка поиска должна остановить
 // создание/перезапись, а не только поменять текст возвращаемого сообщения.
 describe('Google Drive lookup and folder publication',()=>{
-  const noMutation = (f) => assert.ok(!f.trace().some((v)=>v.kind==='upload'||v.kind==='folderCreate'),'lookup failure caused remote mutation');
-  it('updates the existing file from a normally formatted JSON response', (t)=>{
-    const f=fixture(t,{folderLookupBody:'{ "files": [ { "id": "@folderId@" } ] }',lookupBody:JSON.stringify({files:[{id:'file1',name:'synthetic.tar'}]},null,2)});
-    succeeded(f.run()); assert.equal(existsSync(f.archive),false);
-    assert.ok(!f.trace().some((v)=>v.kind==='folderCreate'));
-    assert.equal(f.trace().find((v)=>v.kind==='upload').method,'PATCH');
-  });
-  for(const stage of ['folderLookup','lookup']) for(const opts of [{Http:500},{Http:403},{Exit:7}]) {
-    it(`does not mutate after ${stage} ${JSON.stringify(opts)}`, (t)=>{
-      const options=Object.fromEntries(Object.entries(opts).map(([key,value])=>[stage+key,value]));
-      const f=fixture(t,options); failed(f.run()); assert.ok(f.trace().some((v)=>v.kind===stage));
-      noMutation(f); assert.ok(existsSync(f.archive));
-    });
-  }
-  for(const body of ['{broken','{}','{"files":{}}','{"files":[{"id":33}]}','{"files":[{"id":"bad/id"}]}',
-    '{"files":[],"error":{"code":500}}','{"files":[],"nextPageToken":"more"}',
-    '{"files":[{"id":"file1"}],"nextPageToken":"more"}',
-    '{"files":[{"id":"file1"}],"incompleteSearch":true}',
-    '{"files":[{"id":"file1"}],"incompleteSearch":"false"}',
-    '{"files":[{"id":"file1"},{"id":"file2"}]}']) {
-    it(`rejects an untrustworthy or ambiguous lookup ${body}`, (t)=>{
-      const f=fixture(t,{lookupBody:body}); failed(f.run());
-      assert.ok(f.trace().some((v)=>v.kind==='lookup')); noMutation(f); assert.ok(existsSync(f.archive));
-    });
-  }
-  it('accepts exactly one result with explicit complete-search markers', (t)=>{
-    const f=fixture(t,{lookupBody:'{"files":[{"id":"file1"}],"incompleteSearch":false,"nextPageToken":""}'});
-    succeeded(f.run()); assert.equal(f.trace().find((v)=>v.kind==='upload').method,'PATCH');
-  });
-  it('creates only after a verified complete empty search', (t)=>{
-    const f=fixture(t,{newFile:true}); succeeded(f.run());
-    assert.equal(f.trace().find((v)=>v.kind==='upload').method,'POST');
-  });
-  it('does not choose an unrelated nested id from the lookup body', (t)=>{
-    const f=fixture(t,{lookupBody:'{"files":[{"id":"file1","extra":{"id":"file2"}}]}'});
-    succeeded(f.run()); assert.match(f.trace().find((v)=>v.kind==='upload').url,/\/files\/file1\?/);
-  });
-  it('escapes query literals separately from URL encoding', (t)=>{
-    const rootName="Семья O'Reilly\\Backup & 100%+#";
-    const f=fixture(t,{credentials:{root_folder:`/${rootName}`}}); succeeded(f.run());
-    const request=f.trace().find((v)=>v.kind==='folderLookup');
-    const escaped=rootName.replaceAll('\\','\\\\').replaceAll("'","\\'");
-    assert.deepEqual(request.query.q,[`name='${escaped}' and mimeType='application/vnd.google-apps.folder' and 'root' in parents and trashed=false`]);
-    assert.ok(!Object.keys(request.query).some((key)=>key.includes('100')));
-  });
-  it('preserves special archive names in the exact file search', (t)=>{
-    const f=fixture(t); const name="O'Reilly\\100%+&#.tar"; const archive=join(f.ram,'.private','archive',name); renameSync(f.archive,archive);
-    succeeded(f.run()); const request=f.trace().find((v)=>v.kind==='lookup');
-    const escaped=name.replaceAll('\\','\\\\').replaceAll("'","\\'");
-    assert.deepEqual(request.query.q,[`name='${escaped}' and mimeType!='application/vnd.google-apps.folder' and 'folder1' in parents and trashed=false`]);
-    assert.equal(existsSync(archive),false);
-  });
-  for(const options of [{folderCreateHttp:500},{folderCreateExit:7},{folderCreateBody:'{"id":"bad/id"}'},{folderCreateBody:'{"id":"folder1"'}]) {
-    it(`does not accept failed folder creation ${JSON.stringify(options)}`, (t)=>{
-      const f=fixture(t,{emptyFolders:true,...options}); failed(f.run());
-      assert.ok(f.trace().some((v)=>v.kind==='folderCreate'));
-      assert.ok(!f.trace().some((v)=>v.kind==='upload')); assert.ok(existsSync(f.archive));
-    });
-  }
-  // Родитель .build может наследовать setgid; проверяем именно права доступа,
-  // как в существующем upload-тесте, не принимая harmless 2700 за открытый 0755.
-  it('accepts a formatted creation response and uses a private request file', {skip:!native},(t)=>{
-    const f=fixture(t,{emptyFolders:true,folderCreateBody:'{ "id": "@folderId@" }'}); succeeded(f.run());
-    const event=f.trace().find((v)=>v.kind==='folderCreate'); assert.equal(event.mode&0o777,0o600); assert.equal(event.parentMode&0o777,0o700);
-    assert.equal(JSON.parse(Buffer.from(event.bytes,'hex').toString()).mimeType,'application/vnd.google-apps.folder');
-    assert.equal(statSync(join(f.ram,'.gdrive-folders.json')).mode&0o777,0o600);
-  });
-  for(const command of ['chmod','mv']) it(`preserves the old folder cache after failed ${command}`, (t)=>{
-    const f=fixture(t); const cache=join(f.ram,'.gdrive-folders.json'), old='{"root":"old","logs":"oldLogs","backups":"oldBackups","root_name":"old"}\n'; writeFileSync(cache,old);
-    f.fault(command,'case "${2:-}" in */folders|*/.gdrive-folders.json) true;; *) false;; esac','exit 7');
-    failed(f.run()); assert.ok(f.trace().some((v)=>v.kind===`${command}-fault`));
-    assert.equal(readFileSync(cache,'utf8'),old); assert.ok(existsSync(f.archive));
-    assert.ok(!f.trace().some((v)=>v.kind==='upload')); assert.deepEqual(f.leftovers(),[]);
-  });
-  it('does not overwrite a symlink target used as the folder cache', {skip:!native},(t)=>{
-    const f=fixture(t); const other=join(f.root,'other'); writeFileSync(other,'untouched'); symlinkSync(other,join(f.ram,'.gdrive-folders.json'));
-    failed(f.run()); assert.equal(readFileSync(other,'utf8'),'untouched'); assert.ok(existsSync(f.archive));
-    assert.ok(!f.trace().some((v)=>v.kind==='upload'));
-  });
-  it('rejects a directory in place of the folder cache', (t)=>{
-    const f=fixture(t); mkdirSync(join(f.ram,'.gdrive-folders.json'));
-    failed(f.run()); assert.ok(existsSync(f.archive)); assert.ok(!f.trace().some((v)=>v.kind==='upload'));
-  });
   it('fails a cache read instead of returning a partial id', (t)=>{
     const f=fixture(t); const cache=join(f.ram,'.gdrive-folders.json'); writeFileSync(cache,'{"logs":"folder1"}');
     f.fault('cat','case "${1:-}" in */.gdrive-folders.json) true;; *) false;; esac',`printf '{"logs":"folder1"}'; exit 7`);
@@ -676,28 +512,7 @@ describe('Google Drive lookup and folder publication',()=>{
 });
 
 describe('Google Drive lookup supplemental boundaries',()=>{
-  for(const folderLookupBody of ['{"files":[{"id":"root1"},{"id":"root2"}]}','{"files":[],"nextPageToken":"more"}']) {
-    it(`does not create folders after incomplete or ambiguous search ${folderLookupBody}`, (t)=>{
-      const f=fixture(t,{folderLookupBody}); failed(f.run());
-      assert.ok(f.trace().some((v)=>v.kind==='folderLookup'));
-      assert.ok(!f.trace().some((v)=>v.kind==='folderCreate'||v.kind==='upload')); assert.ok(existsSync(f.archive));
-    });
-  }
-  it('rejects a failed search-body read even when it prints an empty list', (t)=>{
-    const f=fixture(t); f.fault('cat','case "${1:-}" in */search) true;; *) false;; esac',`printf '{"files":[]}'; exit 7`);
-    failed(f.run()); assert.ok(f.trace().some((v)=>v.kind==='cat-fault'));
-    assert.ok(!f.trace().some((v)=>v.kind==='folderCreate'||v.kind==='upload')); assert.ok(existsSync(f.archive));
-  });
-  it('does not choose the default folder after a configured root read fails', (t)=>{
-    const f=fixture(t,{credentials:{root_folder:'/Chosen'}});
-    f.fault('uci','[ "${2:-}" = get ] && [ "${3:-}" = sheepfold.gdrive.root_folder ]','exit 7');
-    failed(f.run()); assert.ok(f.trace().some((v)=>v.kind==='uci-fault'));
-    assert.ok(!f.trace().some((v)=>v.kind==='folderLookup'||v.kind==='folderCreate'||v.kind==='upload')); assert.ok(existsSync(f.archive));
-  });
-  it('keeps the default root when UCI confirms that the option is absent', (t)=>{
-    const f=fixture(t,{credentials:{root_folder:null}}); succeeded(f.run());
-    assert.ok(f.trace().find((v)=>v.kind==='folderLookup').query.q[0].startsWith("name='sheepfold'"));
-  });
+
   it('reads a formatted complete folder cache without doing HTTP', (t)=>{
     const f=fixture(t); writeFileSync(join(f.ram,'.gdrive-folders.json'),JSON.stringify({root:'root1',logs:'logs1',backups:'backups1',root_name:'sheepfold',context_key:f.folderKey(f.creds)},null,2));
     const r=f.call('folder_id_from_cache',['logs']); succeeded(r); assert.equal(r.stdout,'logs1'); assert.deepEqual(f.trace(),[]);
@@ -709,10 +524,7 @@ describe('Google Drive lookup supplemental boundaries',()=>{
       assert.equal(r.stdout,''); assert.deepEqual(f.trace(),[]);
     });
   }
-  it('does not treat an oversized search response as permission to create', (t)=>{
-    const f=fixture(t,{lookupBody:JSON.stringify({files:[],padding:'x'.repeat(65536)})}); failed(f.run());
-    assert.ok(f.trace().some((v)=>v.kind==='lookup')); assert.ok(!f.trace().some((v)=>v.kind==='upload')); assert.ok(existsSync(f.archive));
-  });
+
 });
 
 
@@ -784,23 +596,8 @@ describe('Google Drive folder context',()=>{
     const r=f.call('folder_id_from_cache',['logs']); failed(r); assert.equal(r.stdout,'');
     assert.ok(f.trace().some((v)=>v.kind==='sha256sum-fault')); assert.ok(!f.trace().some((v)=>v.kind==='folderLookup'));
   });
-  for(const field of ['refresh_token','root_folder']) for(const stage of ['folderLookup','folderCreate','lookup','upload','metadata']) {
-    it(`stops the current upload when ${field} changes at ${stage}`,(t)=>{
-      const f=fixture(t,{emptyFolders:stage==='folderCreate',changeContextAt:stage,
-        contextChange:{[field]:field==='root_folder'?'/New destination':'new-account'},tokenBody:'{"access_token":"new-account-token","expires_in":3600,"token_type":"Bearer"}'});
-      const before=JSON.stringify(boundRecord(f)); writeFileSync(folderFile(f),before);
-      const r=f.run(); const trace=f.trace(),index=trace.findIndex((v)=>v.contextChanged);
-      assert.ok(index>=0,'deterministic context change was not reached');
-      failed(r); assert.ok(existsSync(f.archive),'archive removed after context switch');
-      assert.deepEqual(trace.slice(index+1).filter((v)=>!v.kind.endsWith('-fault')),[],'continued HTTP after noticed context change');
-      if(stage==='folderLookup'||stage==='folderCreate') assert.equal(readFileSync(folderFile(f),'utf8'),before);
-    });
-  }
-  it('does not create a new file after context changes in an empty lookup',(t)=>{
-    const f=fixture(t,{newFile:true,changeContextAt:'lookup',contextChange:{root_folder:'/Changed'}});
-    const r=f.run(); assert.ok(f.trace().some((v)=>v.contextChanged)); failed(r);
-    assert.ok(!f.trace().some((v)=>v.kind==='upload')); assert.ok(existsSync(f.archive));
-  });
+
+
   it('stops push-events at a detected context change without deleting the live journal',(t)=>{
     const f=fixture(t,{changeContextAt:'lookup',contextChange:{root_folder:'/Changed'}}); rmSync(f.archive);
     const events=join(f.ram,'events.log'); writeFileSync(events,payload);
@@ -931,14 +728,7 @@ describe('Google Drive quota cleanup',()=>{
   it('does not use a malformed ID to construct a DELETE URL', (t)=>{
     const f=fixture(t); failed(f.call('drive_delete_file',['../other?alt=media'])); noDelete(f);
   });
-  it('archive-push reports cleanup failure instead of success after a verified upload', (t)=>{
-    const f=fixture(t,{inventoryHttp:500}); const r=f.run();
-    assert.ok(f.trace().some((v)=>v.kind==='metadata')); failed(r);
-    assert.equal(JSON.parse(r.stdout).ok,false);
-    assert.equal(JSON.parse(readFileSync(join(f.ram,'.gdrive-sync-status.json'),'utf8')).ok,false);
-    // A previously verified upload is not rolled back by a subsequent cleanup error.
-    assert.equal(existsSync(f.archive),false); noDelete(f);
-  });
+
   it('context change during inventory prevents the first deletion', (t)=>{
     const f=fixture(t,{changeContextAt:'inventory',inventoryFiles:{folder1:[quotaFile('a','100')]}});
     failed(f.call('prune_remote_logs',['50'])); assert.ok(f.trace().some((v)=>v.contextChanged)); noDelete(f);
@@ -1277,7 +1067,7 @@ path.write_text(json.dumps(state))
     const f=fixture(t);const store=configStore(f);
     f.put('storage',readFileSync(join(runtime,'sheepfold-log-storage'),'utf8')
       .replaceAll('/usr/libexec/sheepfold/sheepfold-google-drive',f.path(join(f.bin,'sheepfold-google-drive'))));
-    const r=spawnSync('sh',[f.path(join(f.bin,'storage')),'status'],{cwd:repo,encoding:'utf8',timeout:20000,
+    const r=spawnSync('sh',[f.path(join(f.bin,'storage')),'status'],{cwd:repo,encoding:'utf8',timeout:runtimeTimeout(20000),
       env:{...process.env,PATH:`${f.bin}:${process.env.PATH}`,GDRIVE_OPTIONS:f.path(join(f.root,'response-options.json')),GDRIVE_TRACE:f.path(join(f.root,'trace.jsonl'))}});
     goodStatus(r);assert.deepEqual(store.read(),store.initial);assert.deepEqual(writes(f),[]);
   });
@@ -1328,159 +1118,20 @@ path.write_text(json.dumps(state))
     assert.ok(f.trace().some((v)=>v.kind==='token'));assert.ok(existsSync(f.cacheFile));
     assert.deepEqual(store.read(),store.initial);assert.deepEqual(writes(f),[]);
   });
-  for(const authorized of ['0',null]) it(`archive upload uses verified credentials rather than persistent authorized=${authorized}`,(t)=>{
-    const f=fixture(t,{credentials:{authorized}});const store=configStore(f,true);
-    const r=f.run('archive-push');succeeded(r);assert.equal(JSON.parse(r.stdout).ok,true);
-    assert.ok(f.trace().some((v)=>v.kind==='upload'));assert.equal(existsSync(f.archive),false);
-    assert.deepEqual(store.read(),store.initial);assert.equal(f.trace().filter((v)=>v.kind==='uci-write').length,0);
-  });
-  for(const authorized of ['0','1']) it(`archive failure is not successful no-op when authorized=${authorized} and refresh fails`,(t)=>{
-    const f=fixture(t,{credentials:{authorized},noTokenCache:true,tokenHttp:400});const store=configStore(f,true);
-    failed(f.run());assert.ok(f.trace().some((v)=>v.kind==='token'));assert.ok(existsSync(f.archive));
-    assert.ok(!f.trace().some((v)=>v.kind==='upload'));assert.deepEqual(store.read(),store.initial);
-  });
-  it('does not upload when another storage backend is selected',(t)=>{
-    const f=fixture(t,{credentials:{authorized:'0'}});
-    f.fault('uci','[ "${2:-}" = get ] && [ "${3:-}" = sheepfold.global.log_storage ]',"printf ram; exit 0");
-    succeeded(f.run());assert.ok(existsSync(f.archive));assert.ok(f.trace().some((v)=>v.kind==='uci-fault'));
-    assert.ok(!f.trace().some((v)=>['token','upload','folderLookup'].includes(v.kind)));
-  });
-  it('explicit archive upload can still create missing folders',(t)=>{
-    const f=fixture(t,{credentials:{authorized:'0'},emptyFolders:true});configStore(f,true);
-    const r=f.run();succeeded(r);assert.ok(f.trace().some((v)=>v.kind==='folderCreate'));assert.ok(f.trace().some((v)=>v.kind==='upload'));
-    assert.equal(f.trace().filter((v)=>v.kind==='uci-write').length,0);
-  });
+
 });
 
 // Настоящие tar/cp/cmp; изолированные пути и модели HTTP/UCI, без сети.
-describe('Google Drive local archive snapshots',()=>{
-  const noUpload=(f)=>assert.ok(!f.trace().some((v)=>v.kind==='upload'),'unprepared snapshot reached upload');
-  const onlyConfig=(t,options={})=>{const f=fixture(t,options);rmSync(f.archive);return f;};
-  it('uploads a checked real configuration archive with the exact member',(t)=>{
-    const f=onlyConfig(t),expected=readFileSync(f.configFile,'utf8');const r=f.run();succeeded(r);
-    const upload=f.trace().find((v)=>v.kind==='upload');assert.ok(upload);
-    const out=join(f.root,'uploaded.tar.gz');writeFileSync(out,Buffer.from(upload.bytes,'hex'));
-    const listing=spawnSync('tar',['-tzf',out],{encoding:'utf8'});succeeded(listing);assert.equal(listing.stdout,'sheepfold\n');
-    const content=spawnSync('tar',['-xzOf',out,'sheepfold'],{encoding:'utf8'});succeeded(content);assert.equal(content.stdout,expected);
-    assert.equal(readFileSync(f.configFile,'utf8'),expected);assert.deepEqual(f.leftovers(),[]);
-  });
-  it('does not report config upload success with a wrong remote size',(t)=>{
-    const f=onlyConfig(t,{metadataBody:'{"id":"file1","size":"1"}'});
-    const before=readFileSync(f.configFile);const r=f.run();failed(r);
-    assert.ok(f.trace().some((v)=>v.kind==='metadata'),'remote verification was not reached');
-    assert.equal(JSON.parse(r.stdout).ok,false);assert.deepEqual(readFileSync(f.configFile),before);
-  });
-  for(const mode of ['absent','directory','symlink']) it(`does not report archive success for ${mode} configuration`,{skip:!native},(t)=>{
-    const f=onlyConfig(t);rmSync(f.configFile);
-    if(mode==='directory') mkdirSync(f.configFile);
-    if(mode==='symlink'){const outside=join(f.root,'outside');writeFileSync(outside,'not config');symlinkSync(outside,f.configFile);}
-    const r=f.run();failed(r);noUpload(f);assert.deepEqual(f.leftovers(),[]);
-    assert.equal(JSON.parse(readFileSync(join(f.ram,'.gdrive-sync-status.json'),'utf8')).ok,false);
-  });
-  for(const kind of ['exit','partial','invalid-success']) it(`does not hide tar creation ${kind}`,(t)=>{
-    const f=fixture(t);f.fault('tar','case " $* " in *" -czf "*|*" -cf "*) true;; *) false;; esac',
-      `${kind!=='exit'?'printf broken >"$4"; ':''}exit ${kind==='invalid-success'?0:7}`);
-    const r=f.run();assert.ok(f.trace().some((v)=>v.kind==='tar-fault'));failed(r);
-    assert.ok(existsSync(f.archive),'archive deleted before backup preparation');noUpload(f);assert.deepEqual(f.leftovers(),[]);
-    assert.equal(JSON.parse(r.stdout).error,'backup_prepare_failed');
-  });
-  for(const utility of ['cp','cmp','chmod']) it(`rejects config snapshot ${utility} failure before uploading`,(t)=>{
-    const f=fixture(t);const condition=utility==='cp'?'case " $* " in *"/config/sheepfold "*) true;; *) false;; esac':
-      'case " $* " in *"/config-source/sheepfold"*) true;; *) false;; esac';
-    f.fault(utility,condition,'exit 7');const r=f.run();assert.ok(f.trace().some((v)=>v.kind===utility+'-fault'));failed(r);noUpload(f);
-    assert.ok(existsSync(f.archive));assert.deepEqual(f.leftovers(),[]);
-  });
-  it('rejects a copy that returns success with different bytes',(t)=>{
-    const f=fixture(t);f.fault('cp','case " $* " in *"/config/sheepfold "*) true;; *) false;; esac','for target do :; done; printf wrong >"$target"; exit 0');
-    const r=f.run();assert.ok(f.trace().some((v)=>v.kind==='cp-fault'));failed(r);noUpload(f);assert.ok(existsSync(f.archive));
-  });
-  for(const phase of ['list','read']) it(`requires successful archive ${phase} verification`,(t)=>{
-    const f=fixture(t);const match=phase==='list'?'*-tzf*|*-tf*':'*-xzOf*|*-xOf*';
-    f.fault('tar',`case " $* " in ${match}) true;; *) false;; esac`,'printf sheepfold; exit 7');
-    const r=f.run();assert.ok(f.trace().some((v)=>v.kind==='tar-fault'));failed(r);noUpload(f);assert.ok(existsSync(f.archive));
-  });
-  it('does not accept successful extraction of wrong content',(t)=>{
-    const f=fixture(t);f.fault('tar','case " $* " in *-xzOf*|*-xOf*) true;; *) false;; esac','printf wrong; exit 0');
-    const r=f.run();assert.ok(f.trace().some((v)=>v.kind==='tar-fault'));failed(r);noUpload(f);
-  });
-  for(const output of ['','bad-date','20260911-180000']) it(`rejects unconfirmed timestamp ${JSON.stringify(output)}`,(t)=>{
-    const f=fixture(t);f.fault('date','[ "${1:-}" = +%Y%m%d-%H%M%S ]',`printf '%s' ${q(output)}; exit 7`);
-    const r=f.run();assert.ok(f.trace().some((v)=>v.kind==='date-fault'));failed(r);noUpload(f);
-  });
-  it('leaves an existing same-second staging backup untouched',(t)=>{
-    const f=onlyConfig(t);const staging=join(f.ram,'.gdrive-backup-staging');mkdirSync(staging);
-    const older=join(staging,'sheepfold-config-20260911-180000.tar.gz');writeFileSync(older,'older emergency data');
-    f.fault('date','[ "${1:-}" = +%Y%m%d-%H%M%S ]',"printf 20260911-180000; exit 0");
-    const r=f.run();succeeded(r);assert.equal(readFileSync(older,'utf8'),'older emergency data');
-  });
-  it('does not follow old staging symlinks',{skip:!native},(t)=>{
-    const f=onlyConfig(t),other=join(f.root,'other');mkdirSync(other);symlinkSync(other,join(f.ram,'.gdrive-backup-staging'));
-    const previous=join(other,'sheepfold-config-20260911-180000.tar.gz');writeFileSync(previous,'keep');
-    f.fault('date','[ "${1:-}" = +%Y%m%d-%H%M%S ]',"printf 20260911-180000; exit 0");
-    const r=f.run();succeeded(r);assert.equal(readFileSync(previous,'utf8'),'keep');
-  });
-  it('does not upload if config changes during archive creation',(t)=>{
-    const f=fixture(t),real=spawnSync('sh',['-c','command -v tar'],{encoding:'utf8'}).stdout.trim();
-    f.fault('tar','case " $* " in *" -czf "*|*" -cf "*) true;; *) false;; esac',
-      `${q(real)} "$@" || exit $?; printf 'newer config' >${q(f.path(f.configFile))}; exit 0`);
-    const r=f.run();assert.ok(f.trace().some((v)=>v.kind==='tar-fault'));failed(r);noUpload(f);assert.equal(readFileSync(f.configFile,'utf8'),'newer config');
-  });
-  for(const kind of ['exit','partial-success']) it(`stops on events copy ${kind}`,(t)=>{
-    const f=fixture(t);writeFileSync(join(f.ram,'events.log'),payload);
-    f.fault('cp','[ "${1:-}" = '+q(f.path(join(f.ram,'events.log')))+' ]',
-      `for target do :; done; printf partial >"$target"; exit ${kind==='exit'?7:0}`);
-    const r=f.run();assert.ok(f.trace().some((v)=>v.kind==='cp-fault'));failed(r);noUpload(f);assert.ok(existsSync(f.archive));assert.deepEqual(f.leftovers(),[]);
-  });
-  it('preserves an existing same-second events copy',(t)=>{
-    const f=onlyConfig(t);writeFileSync(join(f.ram,'events.log'),payload);const staging=join(f.ram,'.gdrive-backup-staging');mkdirSync(staging);
-    const previous=join(staging,'events-20260911-180000.log');writeFileSync(previous,'older journal');
-    f.fault('date','[ "${1:-}" = +%Y%m%d-%H%M%S ]',"printf 20260911-180000; exit 0");
-    const r=f.run();succeeded(r);assert.equal(readFileSync(previous,'utf8'),'older journal');assert.deepEqual(f.leftovers(),[]);
-  });
-});
+
 
 // Микропроверки формата/прав без HTTP: собственные файлы удаляет fixture.
-describe('Google Drive archive format controls',()=>{
-  const workspace=(f)=>{const work=join(f.root,'owned-work');mkdirSync(work,{mode:0o700});return work;};
-  it('creates the tar with 0600 before any later upload chmod',{skip:!native},(t)=>{
-    const f=fixture(t),work=workspace(f),real=spawnSync('sh',['-c','command -v tar'],{encoding:'utf8'}).stdout.trim();
-    f.fault('tar','case " $* " in *" -czf "*|*" -cf "*) true;; *) false;; esac',
-      `${q(real)} "$@" || exit $?; python3 -S -c 'import sys,os,json,stat;print(json.dumps({"kind":"archive-permissions","mode":stat.S_IMODE(os.stat(sys.argv[1]).st_mode)}))' "$4" >> "$GDRIVE_TRACE"; exit 0`);
-    const r=f.call('create_config_backup',[f.path(work)]);succeeded(r);
-    assert.equal(f.trace().find((v)=>v.kind==='archive-permissions').mode,0o600);
-    const file=r.stdout;assert.equal(statSync(file).mode&0o777,0o600);assert.equal(statSync(join(work,'config-source')).mode&0o777,0o700);
-  });
-  it('round-trips the generated archive with the installed BusyBox tar',{skip:!native},(t)=>{
-    const available=spawnSync('sh',['-c','command -v busybox'],{encoding:'utf8'});succeeded(available);assert.ok(available.stdout.trim());
-    const f=fixture(t),work=workspace(f);f.put('tar',`#!/bin/sh\nexec ${q(available.stdout.trim())} tar "$@"\n`);
-    const r=f.call('create_config_backup',[f.path(work)]);succeeded(r);
-    const extracted=spawnSync(available.stdout.trim(),['tar','-xzOf',r.stdout,'sheepfold'],{encoding:'utf8'});succeeded(extracted);
-    assert.equal(extracted.stdout,readFileSync(f.configFile,'utf8'));
-  });
-  it('preserves the no-gzip tar format and verifies it before return',(t)=>{
-    const f=fixture(t),work=workspace(f);
-    const r=f.call('eval',[`command() { if [ "$1" = -v ] && [ "$2" = gzip ]; then return 1; fi; command command "$@"; }; create_config_backup ${q(f.path(work))}`]);
-    succeeded(r);assert.ok(r.stdout.endsWith('.tar'));
-    const extracted=spawnSync('tar',['-xOf',r.stdout,'sheepfold'],{encoding:'utf8'});succeeded(extracted);assert.equal(extracted.stdout,readFileSync(f.configFile,'utf8'));
-  });
-  it('rejects an extra archive member even when extraction of sheepfold would match',(t)=>{
-    const f=fixture(t),work=workspace(f);f.fault('tar','case " $* " in *-tzf*|*-tf*) true;; *) false;; esac',"printf 'sheepfold\\nother\\n'; exit 0");
-    const r=f.call('create_config_backup',[f.path(work)]);failed(r);assert.ok(f.trace().some((v)=>v.kind==='tar-fault'));
-  });
-  it('rejects malformed successful time output before tar creation',(t)=>{
-    const f=fixture(t),work=workspace(f);f.fault('date','[ "${1:-}" = +%Y%m%d-%H%M%S ]',"printf incorrect; exit 0");
-    const r=f.call('create_config_backup',[f.path(work)]);failed(r);assert.ok(f.trace().some((v)=>v.kind==='date-fault'));
-    assert.deepEqual(readdirSync(work).filter((v)=>v.includes('.tar')),[]);
-  });
-});
-
 
 // Export the configured ordinary journal, not a hardcoded old file. Real flock
 // checks are Linux-only; all HTTP/UCI data are synthetic and stay in .build.
 describe('Google Drive configured journal snapshots',()=>{
   const journalUploads=(f)=>f.trace().filter((v)=>v.kind==='upload' && /^events(?:-|\.)/.test(v.remoteName));
   const noCloud=(f)=>assert.ok(!f.trace().some((v)=>['token','folderLookup','upload','delete'].includes(v.kind)),'invalid log reached cloud');
-  for(const command of ['push-events','archive-push']) {
+  for(const command of ['push-events']) {
     it(`${command} exports the selected nested journal, never the stale default`,(t)=>{
       const f=fixture(t);rmSync(f.archive);
       const custom=join(f.ram,'custom logs','журнал.log');mkdirSync(join(f.ram,'custom logs'));
@@ -1547,7 +1198,7 @@ describe('Google Drive configured journal snapshots',()=>{
 
 describe('Google Drive journal snapshot failure boundaries',()=>{
   const noCloud=(f)=>assert.ok(!f.trace().some((v)=>['token','folderLookup','upload','delete'].includes(v.kind)));
-  for(const command of ['push-events','archive-push']) {
+  for(const command of ['push-events']) {
     for(const option of ['absent','empty']) it(`${command} keeps the default for ${option} path setting`,(t)=>{
       const f=fixture(t);rmSync(f.archive);writeFileSync(join(f.ram,'events.log'),payload);
       if(option==='empty')f.update({logPath:''});succeeded(f.run(command));
@@ -1599,7 +1250,7 @@ const waitForEvidence=async(check)=>{
   while(!check()){if(Date.now()>until)throw new Error('barrier evidence was not reached');await new Promise((r)=>setTimeout(r,20));}
 };
 describe('Google Drive journal shared-lock coordination',{skip:!native},()=>{
-  for(const command of ['push-events','archive-push']) it(`${command} waits for an actual writer lock before reading`,async(t)=>{
+  for(const command of ['push-events']) it(`${command} waits for an actual writer lock before reading`,async(t)=>{
     const f=fixture(t);rmSync(f.archive);const journal=join(f.ram,'events.log');writeFileSync(journal,payload);
     const lock=join(f.ram,'log-maintenance.flock');
     const holder=spawn('flock',['-x',lock,'sh','-c','printf ready; cat >/dev/null'],{stdio:['pipe','pipe','pipe']});
@@ -1631,7 +1282,7 @@ describe('Google Drive journal shared-lock coordination',{skip:!native},()=>{
 
 /* Проверяем отзыв выбранного backend, не отзыв OAuth и не rollback уже ушедшего HTTP. */
 describe('Google Drive selected storage boundary', () => {
-  for (const action of ['archive-push', 'push-events']) {
+  for (const action of ['push-events']) {
     for (const storagePartial of ['', 'google_drive']) it(`${action} rejects failed initial storage read ${JSON.stringify(storagePartial)}`, t => {
       const f = fixture(t, { storageFault: true, storagePartial });
       writeFileSync(join(f.ram, 'events.log'), payload);
@@ -1652,33 +1303,5 @@ describe('Google Drive selected storage boundary', () => {
       assert.equal(readFileSync(join(f.ram, 'events.log'), 'utf8'), payload);
     });
   }
-  for (const nextStorage of ['yandex_disk', null, 'invalid']) it(`does not fall back after selection becomes ${nextStorage}`, t => {
-    const f = fixture(t, { changeStorageAt: 'folderLookup', nextStorage }), r = f.run(); failed(r);
-    assert.ok(f.trace().some(e => e.storageChanged)); assert.ok(!f.trace().some(e => e.kind === 'upload')); assert.ok(existsSync(f.archive));
-  });
-  for (const storagePartial of ['', 'google_drive']) it(`rejects failed reread with partial ${JSON.stringify(storagePartial)}`, t => {
-    const f = fixture(t, { changeStorageAt: 'folderLookup', unrelatedStorageChange: true, storageFaultAfterChange: true, storagePartial });
-    failed(f.run()); assert.ok(f.trace().some(e => e.storageChanged)); assert.ok(f.trace().some(e => e.kind === 'storageReadFault'));
-    assert.ok(!f.trace().some(e => e.kind === 'upload')); assert.ok(existsSync(f.archive));
-  });
-  it('does not infer an absent selection from an unsuccessful configuration read', t => {
-    const f = fixture(t, { noStorage: true, storageShowFault: true }), r = f.run(); failed(r);
-    assert.equal(JSON.parse(r.stdout).error, 'storage_unavailable'); assert.ok(f.trace().some(e => e.kind === 'storageShowFault')); assert.ok(existsSync(f.archive));
-  });
-  it('does not cancel an upload because an unrelated global field changed', t => {
-    const f = fixture(t, { changeStorageAt: 'folderLookup', unrelatedStorageChange: true }), r = f.run(); succeeded(r);
-    assert.ok(f.trace().some(e => e.storageChanged)); assert.equal(existsSync(f.archive), false);
-  });
-  for (const [changeStorageAt, options] of [['token', { noTokenCache: true }], ['folderCreate', { emptyFolders: true }]]) {
-    it(`stops after selection changes at ${changeStorageAt}`, t => {
-      const f = fixture(t, { changeStorageAt, ...options }), r = f.run(); failed(r);
-      const trace = f.trace(), at = trace.findIndex(e => e.storageChanged); assert.ok(at >= 0);
-      assert.ok(!trace.slice(at + 1).some(e => e.method)); assert.ok(existsSync(f.archive));
-    });
-  }
-  it('does not restore already completed archives after a switch during final inventory', t => {
-    const f = fixture(t, { changeStorageAt: 'inventory' }), r = f.run(); failed(r);
-    const trace = f.trace(), at = trace.findIndex(e => e.storageChanged); assert.ok(at >= 0);
-    assert.ok(!trace.slice(at + 1).some(e => e.method)); assert.equal(existsSync(f.archive), false);
-  });
+
 });

@@ -13,6 +13,7 @@ import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { shellTestPath } from '../tools/quality/testEnvironment.mjs';
+import { runtimeTimeout } from './helpers/runtimeProcess.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 const runtime = join(repo, 'package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold');
@@ -146,7 +147,7 @@ sys.exit(subprocess.run([real[kind],*args]).returncode)
   const args = action => ['-c', `export PATH=${quote(path(bin))}:"$PATH"; exec sh "$@"`, 'fixture', path(join(bin, 'sheepfold-yandex-disk')), action];
   const results = [];
   const recordResult = (action, r) => { assert.ifError(r.error); results.push({ action, status: r.status, stdout: r.stdout, stderr: r.stderr }); return r; };
-  const run = action => recordResult(action, spawnSync('sh', args(action), { cwd: repo, env, encoding: 'utf8', timeout: 25000 }));
+  const run = action => recordResult(action, spawnSync('sh', args(action), { cwd: repo, env, encoding: 'utf8', timeout: runtimeTimeout(25000) }));
   const start = action => {
     const child = spawn('sh', args(action), { cwd: repo, env, detached: posix, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = ''; child.stdout.on('data', b => { stdout += b; }); child.stderr.on('data', b => { stderr += b; });
@@ -174,7 +175,7 @@ const json = r => JSON.parse(r.stdout);
 
 // Full real entries, no patched uploader and no real remote service.
 describe('Yandex configured journal snapshot', () => {
-  for (const action of ['push-events', 'archive-push']) {
+  for (const action of ['push-events']) {
     it(`${action} sends the configured journal, not equal-size stale default`, t => {
       const f = fixture(t); assert.equal(selectedBytes.length, staleBytes.length);
       const r = f.run(action); assert.equal(r.status, 0, r.stderr + r.stdout);
@@ -269,7 +270,7 @@ async function holdLock(t, f) {
   return async () => { writeFileSync(release, 'go'); assert.equal(await done, 0); };
 }
 describe('Yandex journal lock protocol with real flock', () => {
-  for (const action of ['push-events', 'archive-push']) it(`${action} waits for writer and reloads source after lock`, { skip: !posix, timeout: 20000 }, async t => {
+  for (const action of ['push-events']) it(`${action} waits for writer and reloads source after lock`, { skip: !posix, timeout: 20000 }, async t => {
     const f = fixture(t, { lockTrace: true }), release = await holdLock(t, f), run = f.start(action);
     try {
       await until(() => f.trace().some(e => e.tool === 'flock' && e.status !== 0) || run.child.exitCode !== null);

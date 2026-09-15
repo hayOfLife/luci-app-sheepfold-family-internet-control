@@ -1,5 +1,16 @@
 # Current Implementation Status
 
+Current source decision, 2026-09-15: **r324**, selectively accepted from r323 and
+the review-time-confirmation patch. Both cloud `archive-push` commands fail closed
+before raw configuration export; direct journal `push-events` remains separate.
+LuCI save/import/export lifecycle and time-save verification/recovery are improved.
+The [acceptance report](review-r323-acceptance.ru.md) records B61–B159 individually,
+local verification and unresolved native/OpenWrt/cloud boundaries. This is not a
+published release or a deployment. Android, access policy and remote services are unchanged.
+
+All dated continuations below are historical evidence, not current archive-upload
+instructions or fresh test results for r324.
+
 Focused continuation: 2026-09-13, **r323**, based on `276d4d0` (r322).
 B130 checks the still-selected backend throughout both cloud senders, not merely
 the credentials/root. A noticed switch to RAM/another backend or a failed reread

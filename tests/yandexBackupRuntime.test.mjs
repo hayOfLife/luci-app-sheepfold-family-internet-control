@@ -1,8 +1,8 @@
 /*
- * Проверяет подготовку локального backup Яндекс Диска настоящими shell/cp/tar.
- * UCI/HTTP — синтетические модели; faults оставляют проверяемый trace. Несколько
- * orchestration-тестов явно заменяют только uploader: они доказывают порядок,
- * содержимое и владение staging, но не исправность PUT/XML/verify или restore.
+ * Проверяет защитный отказ архивного caller Яндекс Диска до работы с секретами.
+ * UCI/HTTP — синтетические модели; trace подтверждает отсутствие сетевых действий,
+ * а сравнение файлов — сохранность старой очереди. Проверяются штатный uploader
+ * и его двойник; успех не доказывает PUT/XML/verify, безопасный экспорт или restore.
  * Меняются только уникальные .build-каталоги; после теста они удаляются.
  */
 import assert from 'node:assert/strict';
@@ -189,114 +189,25 @@ sys.exit(result.returncode)
   return { run, trace, archive, stage, ram, oldBackup, oldEvents, foreign };
 }
 const parse = r => JSON.parse(r.stdout);
-const posix = process.platform !== 'win32';
 const freshStages = f => readdirSync(f.ram).filter(n=>n.startsWith('.yandex-archive.'));
 
 // Транспорт и старый verify не подменяются в негативных preflight-сценариях.
-describe('Yandex archive preparation before mutation', () => {
-  for (const [fault,error] of [
-    ['tar-create','backup_prepare_failed'], ['tar-corrupt','backup_prepare_failed'],
-    ['tar-list','backup_prepare_failed'], ['tar-extract','backup_prepare_failed'],
-    ['tar-extra','backup_prepare_failed'], ['tar-wrong','backup_prepare_failed'],
-    ['cp-config','backup_prepare_failed'], ['badcopy-config','backup_prepare_failed'],
-    ['cmp','backup_prepare_failed'], ['chmod-config','backup_prepare_failed'],
-    ['chmod-archive','backup_prepare_failed'], ['date','backup_prepare_failed'],
-    ['stamp','backup_prepare_failed'], ['config-changed','backup_prepare_failed'],
-    ['cp-events','events_snapshot_failed'], ['badcopy-events','events_snapshot_failed'],
-  ]) it(`preserves pending data and stops before cloud mutation on ${fault}`, t => {
-    const f=fixture(t,{fault,archive:true,events:true}); const r=f.run();
-    assert.ok(f.trace().some(e=>e.fault===fault),'requested fault actually ran');
-    assert.notEqual(r.status,0); assert.equal(parse(r).error,error);
-    assert.equal(readFileSync(f.archive,'utf8'),'original pending archive');
-    assert.ok(!f.trace().some(e=>['MKCOL','PUT','DELETE'].includes(e.method)), 'no cloud mutation');
-    assert.deepEqual(freshStages(f),[]);
-  });
-  it('does not report ok:true when tar fails and no other archives exist',t=>{
-    const f=fixture(t,{fault:'tar-create'}), r=f.run();
-    assert.ok(f.trace().some(e=>e.fault==='tar-create')); assert.notEqual(r.status,0);
-    assert.equal(parse(r).error,'backup_prepare_failed');
-  });
-  it('rejects a missing config before any MKCOL', t=>{
-    const f=fixture(t,{missingConfig:true,archive:true}), r=f.run();
-    assert.notEqual(r.status,0); assert.equal(parse(r).error,'backup_prepare_failed');
-    assert.ok(existsSync(f.archive)); assert.ok(!f.trace().some(e=>e.method==='MKCOL'));
-  });
-  it('rejects a symbolic config rather than backing up a link', {skip:!posix}, t=>{
-    const f=fixture(t,{configLink:true}),r=f.run();
-    assert.notEqual(r.status,0); assert.equal(parse(r).error,'backup_prepare_failed');
-    assert.ok(!f.trace().some(e=>e.method==='MKCOL'));
-  });
-  it('keeps a foreign stage printed by failed mktemp',t=>{
-    const f=fixture(t,{fault:'mktemp'}),r=f.run();
-    assert.ok(f.trace().some(e=>e.fault==='mktemp')); assert.notEqual(r.status,0);
-    assert.equal(parse(r).error,'backup_prepare_failed'); assert.equal(readFileSync(f.oldBackup,'utf8'),'old backup must survive');
-  });
-  it('cleans its own directory after failing chmod',t=>{
-    const f=fixture(t,{fault:'chmod-work'}),r=f.run();
-    assert.ok(f.trace().some(e=>e.fault==='chmod-work')); assert.notEqual(r.status,0);
-    assert.deepEqual(freshStages(f),[]); assert.ok(existsSync(f.oldBackup));
-  });
-  it('does nothing when another storage is selected',t=>{
-    const f=fixture(t,{storage:'ram',fault:'tar-create'}),r=f.run();
-    assert.equal(r.status,0); assert.equal(r.stdout,'');
-    assert.ok(!f.trace().some(e=>['curl','tar'].includes(e.kind))); assert.deepEqual(freshStages(f),[]);
-  });
-  it('preserves old copies even when the native uploader later fails',t=>{
-    const f=fixture(t,{events:true}),r=f.run(); assert.notEqual(r.status,0);
-    assert.equal(parse(r).ok,false);
-    assert.equal(readFileSync(f.oldBackup,'utf8'),'old backup must survive');
-    assert.equal(readFileSync(f.oldEvents,'utf8'),'old journal must survive');
-  });
-  it('still reports a later upload failure rather than claiming WebDAV is fixed',t=>{
-    const f=fixture(t),r=f.run(); assert.notEqual(r.status,0);
-    assert.equal(parse(r).ok,false); assert.ok(parse(r).errors>0);
-    assert.deepEqual(freshStages(f),[]);
-  });
-});
+
 
 // Только этот блок заменяет upload_and_verify, чтобы проверить подготовленные
 // байты и удаление staging независимо от ещё не исправленного XML/verify.
-describe('Yandex prepared files with an explicit uploader boundary model',()=>{
-  for (const events of [false,true]) it(`supplies a verified config and ${events?'journal':'no journal'}`,t=>{
-    const f=fixture(t,{events}),r=f.run('upload-model'); assert.equal(r.status,0,r.stderr);
-    assert.equal(parse(r).pushed,events?2:1);
-    const uploads=f.trace().filter(e=>e.upload).map(e=>e.upload);
-    const backup=uploads.find(e=>e.remote.includes('/backups/')); assert.ok(backup);
-    assert.deepEqual(backup.members,['sheepfold']); assert.equal(backup.configHex,Buffer.from(configText).toString('hex'));
-    if(posix) { assert.equal(backup.mode,0o600); assert.equal(backup.parentMode & 0o777,0o700); }
-    assert.deepEqual(freshStages(f),[]);
-  });
-  it('keeps pre-existing same-second backup and journal files',t=>{
-    const f=fixture(t,{events:true}),r=f.run('upload-model'); assert.equal(r.status,0,r.stderr);
-    assert.equal(readFileSync(f.oldBackup,'utf8'),'old backup must survive');
-    assert.equal(readFileSync(f.oldEvents,'utf8'),'old journal must survive');
-  });
-  it('does not follow the old shared staging symlink', {skip:!posix},t=>{
-    const f=fixture(t,{stagingLink:true,events:true}),r=f.run('upload-model'); assert.equal(r.status,0,r.stderr);
-    assert.equal(readFileSync(f.oldBackup,'utf8'),'old backup must survive');
-    assert.equal(readFileSync(join(f.foreign,'keep'),'utf8'),'foreign data');
-  });
-  it('creates the archive privately before any later chmod', {skip:!posix}, t=>{
-    const f=fixture(t),r=f.run('upload-model'); assert.equal(r.status,0,r.stderr);
-    const created=f.trace().filter(e=>e.createdMode!==undefined); assert.equal(created.length,1);
-    assert.equal(created[0].createdMode,0o600);
-  });
-  it('isolates successive operations with the same timestamp',t=>{
-    const f=fixture(t); assert.equal(f.run('upload-model').status,0); assert.equal(f.run('upload-model').status,0);
-    const uploads=f.trace().filter(e=>e.upload).map(e=>e.upload.path); assert.equal(uploads.length,2);
-    assert.notEqual(uploads[0],uploads[1]); assert.deepEqual(freshStages(f),[]);
-  });
-  it('keeps the pending archive after uploader rejection',t=>{
-    const f=fixture(t,{archive:true,uploadFail:true}),r=f.run('upload-model'); assert.notEqual(r.status,0);
-    assert.equal(parse(r).ok,false); assert.ok(existsSync(f.archive)); assert.deepEqual(freshStages(f),[]);
-  });
-  it('retains a verified uncompressed tar without gzip', {skip:!posix},t=>{
-    const f=fixture(t,{noGzip:true}),r=f.run('upload-model'); assert.equal(r.status,0,r.stderr);
-    const uploaded=f.trace().find(e=>e.upload); assert.ok(uploaded);
-    assert.ok(uploaded.upload.path.endsWith('.tar')); assert.deepEqual(uploaded.upload.members,['sheepfold']);
-  });
-  it('validates the local tar with native BusyBox tar as well', {skip:!existsSync('/usr/bin/busybox')},t=>{
-    const f=fixture(t,{busyboxTar:true}),r=f.run('upload-model'); assert.equal(r.status,0,r.stderr);
-    assert.equal(parse(r).pushed,1);
+
+
+// Safe containment replaces the retired raw tar producer tests (B132).
+describe('Yandex disabled automatic archive', () => {
+  for (const mode of ['native', 'uploader-model']) it('refuses archive via ' + mode + ' without consuming pending files', t => {
+    const f = fixture(t, { archive: true, events: true });
+    const before = readFileSync(f.archive);
+    const result = f.run(mode);
+    assert.notEqual(result.status, 0);
+    assert.equal(parse(result).error, 'config_backup_unavailable');
+    assert.deepEqual(readFileSync(f.archive), before);
+    assert.equal(f.trace().filter(item => item.method).length, 0);
+    assert.deepEqual(freshStages(f), []);
   });
 });

@@ -18,6 +18,61 @@ function fixtureConsumers(helperName) {
 }
 
 describe('change impact advisor §impact1', () => {
+  it('selects time panel, action adapter and backend result checks together', () => {
+    for (const file of [
+      'package/luci-app-sheepfold-family-internet-control/htdocs/luci-static/resources/sheepfold/features/settings/time.js',
+      'package/luci-app-sheepfold-family-internet-control/htdocs/luci-static/resources/sheepfold/features/overview/application.js',
+      'package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-time-control',
+    ]) {
+      const report = inspectChanges([file]);
+      for (const name of ['timeSettingsLifecycle.test.mjs', 'timeTransactionRecovery.test.mjs', 'timeSaveConfirmation.test.mjs', 'timeAndDetectionSetup.test.mjs', 'luciCommandActions.test.mjs', 'cloudArchiveSafety.test.mjs'])
+        assert.ok(report.directTests.includes(name), `${file}: missing ${name}`);
+      assert.deepEqual(report.unknown, []);
+      for (const name of report.directTests)
+        assert.ok(readdirSync(import.meta.dirname).includes(name), `missing test file ${name}`);
+    }
+  });
+  it('selects messenger action wiring, Save lifecycle and translations without a full suite', () => {
+    for (const path of ['messenger/settings', 'settings/controller', 'settings/draft', 'settings/save-flow']) {
+      const report = inspectChanges([`package/luci-app-sheepfold-family-internet-control/htdocs/luci-static/resources/sheepfold/features/${path}.js`]);
+      assert.ok(report.directTests.includes('messengerSettingsLifecycle.test.mjs'), path);
+      assert.ok(report.directTests.includes('settingsSaveLifecycle.test.mjs'), path);
+      assert.deepEqual(report.unknown, []);
+      if (path !== 'settings/save-flow') assert.equal(report.fullTest, false);
+    }
+  });
+
+  it('selects direct settings draft and save lifecycle consumers', () => {
+    for (const module of ['draft', 'save-flow']) {
+      const report = inspectChanges([`package/luci-app-sheepfold-family-internet-control/htdocs/luci-static/resources/sheepfold/features/settings/${module}.js`]);
+      for (const file of ['settingsSaveLifecycle.test.mjs', 'frontendDomainModels.test.mjs',
+        'frontendModules.test.mjs', 'overviewFinalRuntime.test.mjs', 'overviewFinalRefreshSemantics.test.mjs',
+        'overviewFinalDecomposition.test.mjs', 'overviewLocalization.test.mjs', 'countryProfiles.test.mjs',
+        'auditCorrections.test.mjs', 'finalAuditHardening.test.mjs'])
+        assert.ok(report.directTests.includes(file), `${module}: missing ${file}`);
+      assert.deepEqual(report.unknown, []);
+      if (module === 'draft') assert.equal(report.fullTest, false);
+    }
+  });
+  it('selects all direct UCI adapter consumers without requiring unrelated full suites', () => {
+    const report = inspectChanges(['package/luci-app-sheepfold-family-internet-control/htdocs/luci-static/resources/sheepfold/core/persistence/uci.js']);
+    for (const name of ['backupMutationConsistency.test.mjs', 'backupImportUiSafety.test.mjs',
+      'backupRecoveryRegression.test.mjs', 'luciPersistenceAdapters.test.mjs', 'frontendModules.test.mjs',
+      'finalAuditHardening.test.mjs', 'auditRuntimeCorrections.test.mjs', 'overviewFinalRuntime.test.mjs',
+      'overviewFinalExperimentalR252.test.mjs', 'overviewFinalRefreshSemantics.test.mjs',
+      'overviewFinalAudit.test.mjs', 'luciFinalAuditTool.test.mjs'])
+      assert.ok(report.directTests.includes(name), `missing UCI consumer ${name}`);
+    assert.deepEqual(report.unknown, []); assert.equal(report.fullTest, false);
+  });
+  it('selects backup export privacy, UI and restore consumers together', () => {
+    for (const name of ['backup', 'backup-panel', 'backup-controller', 'backup-persistence']) {
+      const report = inspectChanges([`package/luci-app-sheepfold-family-internet-control/htdocs/luci-static/resources/sheepfold/features/settings/${name}.js`]);
+      assert.deepEqual(report.unknown, []);
+      for (const test of ['backupMutationConsistency.test.mjs', 'backupImportUiSafety.test.mjs', 'backupExportSafety.test.mjs', 'settingsBackup.test.mjs', 'backupRecoveryRegression.test.mjs', 'luciPersistenceAdapters.test.mjs', 'frontendModules.test.mjs', 'overviewLocalization.test.mjs'])
+        assert.ok(report.directTests.includes(test), `${name} requires ${test}`);
+      assert.ok(report.categories.includes('security')); assert.ok(report.categories.includes('luci'));
+    }
+  });
   it('selects Yandex transport, storage callers and package checks', () => {
     const report = inspectChanges(['package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-yandex-disk']);
     assert.deepEqual(report.unknown, []);
@@ -283,4 +338,11 @@ describe('change impact advisor §impact1', () => {
       assert.deepEqual(report.directTests, fixtureConsumers(helperName), helperName);
     }
   });
+});
+
+// Новый helper затрагивает и импортирующие его fixture, не только прямой unit.
+it('selects privacy guard and indirect runtime process consumers', () => {
+  const result = inspectChanges(['tests/helpers/runtimeProcess.mjs']);
+  for (const name of ['runtimeProcess.test.mjs', 'cloudArchiveSafety.test.mjs', 'adminNotificationRuntime.test.mjs', 'legacyLogRuntime.test.mjs', 'maintenanceRotationRuntime.test.mjs', 'googleDriveUploadRuntime.test.mjs', 'yandexContextRuntime.test.mjs', 'timeSaveConfirmation.test.mjs', 'timeTransactionRecovery.test.mjs', 'yandexDiskRuntime.test.mjs', 'yandexSyncRuntime.test.mjs', 'yandexUploadRuntime.test.mjs', 'yandexDownloadRuntime.test.mjs', 'yandexEventsRuntime.test.mjs', 'packageHardeningRuntime.test.mjs'])
+    assert.ok(result.directTests.includes(name), `missing ${name}`);
 });
