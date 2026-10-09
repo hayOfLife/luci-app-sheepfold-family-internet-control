@@ -78,6 +78,30 @@ try {
 Это настройка доверия к проверенному локальному checkout, не исправление дефекта
 продукта и не разрешение доверять любой загруженной копии.
 
+### Push зависает после передачи объектов
+
+10.10.2026 обычная HTTPS-отправка ожидала ответ без завершения; ограниченный повтор
+вернул `curl 28` и `unexpected disconnect`, затем вводящее в заблуждение
+`Everything up-to-date`. GitHub API всё ещё показывал прежний SHA. Повтор с уже
+авторизованным `gh` как процессным credential helper завершился успешно за несколько
+секунд. Это рабочий обход наблюдаемого сбоя, не доказательство ошибки credential
+manager, антивируса или сети.
+
+Из проверенного корня checkout, только при разрешённом push и после завершения
+прежней попытки:
+
+```powershell
+git -c safe.directory=C:/Users/User/Documents/pesochnica/sheepfold-r297-review -c credential.helper= -c 'credential.helper=!gh auth git-credential' -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push origin main
+gh api repos/hayOfLife/luci-app-sheepfold-family-internet-control/git/ref/heads/main --jq .object.sha
+git -c safe.directory=C:/Users/User/Documents/pesochnica/sheepfold-r297-review rev-parse HEAD
+```
+
+Ожидаются exit 0 у push и совпадение двух SHA. Команда меняет удалённую `main`,
+но не глобальный credential helper, TLS-проверку или настройки аккаунта. Не применять
+`--force`, не запускать несколько push одновременно и не считать передачу pack либо
+строку `Everything up-to-date` доказательством успеха после ненулевого exit. Если `gh`
+не авторизован, не извлекать/печатать токен; сообщить о необходимости обычного входа.
+
 ### Смена регистра имени файла на Windows
 
 На регистронезависимой файловой системе нельзя считать `Name.kt` и `name.kt` двумя
