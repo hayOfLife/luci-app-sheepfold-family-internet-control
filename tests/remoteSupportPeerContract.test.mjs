@@ -31,6 +31,8 @@ describe('private support server peer boundary §rsuppeer', () => {
     assert.match(integration, /exact plan hash/);
     assert.match(integration, /rollback/);
     assert.match(decision, /private repository `kva4991\/sheepfold-support-server`/);
+    assert.equal(manifest.peerProject.repository, 'https://github.com/hayOfLife/sheepfold-support-server');
+    assert.match(integration, /https:\/\/github\.com\/hayOfLife\/sheepfold-support-server/);
   });
 
   it('keeps report upload separate from remote access', () => {

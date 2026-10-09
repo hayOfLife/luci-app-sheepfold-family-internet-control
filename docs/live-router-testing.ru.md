@@ -12,7 +12,7 @@
 
 По разрешению владельца Standard `0.1.0-r285` установлен поверх `r284` на
 Cudy WR3000S v1 / OpenWrt 25.12.5. Исходники отправлены в `main`: `821a6bb`.
-Все четыре варианта [SDK-сборки](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/actions/runs/33389723875)
+Все четыре варианта [SDK-сборки](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/actions/runs/33389723875)
 успешны; скачанный Standard OpenWrt APK имеет размер 427794 байта и SHA-256
 `2dac9e18bd9d4a2f9508b5038a4e341fd6bd603935335661c769ac9f522f81a0`.
 Метаданные, размеры и SHA-256 всех четырёх файлов сверены с build manifest.
@@ -44,7 +44,7 @@ Browser runs: `20260831144140-28890f62` до установки и `202608311522
 Артефакты и backup не публикуются в Git.
 
 Локальный gate: 123 test-файла, 794 passed и два Windows-пропуска `flock`.
-[Linux CI](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/actions/runs/33389723848):
+[Linux CI](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/actions/runs/33389723848):
 `796/796`, без skips, оба Android APK собраны и проверены Lint.
 Последующая правка индикатора обновления уже в исходниках, но APK на физическом телефоне
 в этом проходе не переустанавливался. Публичный релиз не создавался. Запись Wi-Fi,
@@ -54,7 +54,7 @@ Browser runs: `20260831144140-28890f62` до установки и `202608311522
 
 На Cudy WR3000S v1 / OpenWrt 25.12.5 установлен Standard `0.1.0-r284` поверх `r283`.
 Исходники: `32ffa90`; все четыре ячейки
-[официальной SDK-сборки](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/actions/runs/33376490133)
+[официальной SDK-сборки](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/actions/runs/33376490133)
 успешны. Установлен именно OpenWrt APK, не Android APK и не переименованный IPK.
 SHA-256 Standard APK:
 `767d950e432106f16135914eedcd9f13d13b4c2aa52eabc58b34be92c406a42b`.

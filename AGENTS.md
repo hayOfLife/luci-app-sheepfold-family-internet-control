@@ -240,7 +240,7 @@ Avoid:
 - A 72-hour support code is only a waiting/claim window. The first authenticated claim by the single `Sheepfold Support` service account burns the code and starts a separate 24-hour administrative session. The code alone never authenticates support.
 - Give every router a separate cryptographic identity and every support transport a short-lived mTLS credential; a shared FRP token for all installations is forbidden. A random per-session relay port may isolate a private bastion route, but it is not a secret and must never be derived from or encoded in the spoken support code. The detailed threat and message contracts are in `docs/remote-support-threat-model.ru.md` and `docs/remote-support-protocol.ru.md` (§rsup001).
 - Treat `tools/remoteSupport/` as a Node.js test-only reference contract. Never import it into LuCI/router packages or describe it as a working server. Production adapters must match its golden vectors and stricter message-specific schemas before the disabled UI is activated (§rsup001).
-- The private `kva4991/sheepfold-support-server` repository owns the encrypted report queue, control-plane persistence, relay/bastion isolation, operator CLI and local Codex bridge. This public repository remains canonical for router-side protocol, consent, expiry/revoke and golden vectors. Read `docs/remote-support-server-integration.ru.md` and compare both `peer-project.json` manifests before changing the shared boundary; never add the private repository as a submodule (§rsuppeer).
+- The private `hayOfLife/sheepfold-support-server` repository owns the encrypted report queue, control-plane persistence, relay/bastion isolation, operator CLI and local Codex bridge. This public repository remains canonical for router-side protocol, consent, expiry/revoke and golden vectors. Read `docs/remote-support-server-integration.ru.md` and compare both `peer-project.json` manifests before changing the shared boundary; never add the private repository as a submodule (§rsuppeer).
 - The Sheepfold support transport may bypass Podkop only for verified relay endpoints through Sheepfold-owned rules. Never rewrite Podkop configuration or create a broad direct-WAN bypass.
 - Run the support client under a dedicated UID and match UID, verified relay endpoint and port together. Restore the narrow route through firewall4/netifd lifecycle hooks; do not couple it to client-list rebuilds.
 - Keep support session identity/deadlines outside a single frpc socket. A small connection manager owns signed multi-relay failover, explicit states, bounded exponential backoff with jitter and idempotent server sequence; reconnect never extends the 24-hour access window (§rsup001).
@@ -272,6 +272,8 @@ Avoid:
 - Pairing actions must be logged with masking.
 
 ## Android Pairing And Wi-Fi MAC
+
+- The owner approved future credential-authenticated network profiles for one parent phone, but r324 main still has single-MAC bound tokens. The rules below describe that current limitation, not rejection of the agreed design. Record the pending work in `docs/home-network-access.ru.md`; never implement it by merely removing source checks or claim aliases already exist.
 
 - Keep the two intentional Android build roots: `android/` for the parent/admin application and `android-child/` for the non-admin child application. Do not merge their permissions, credentials, or responsibilities.
 - `android/app/` and `android-child/app/` are application modules inside those builds, not additional projects.

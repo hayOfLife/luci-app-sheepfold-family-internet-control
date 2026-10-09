@@ -22,8 +22,15 @@ Private vendor pin обновляется только после review/public 
 
 ## Репозитории
 
-- этот публичный клиентский проект: <https://github.com/kva4991/luci-app-sheepfold-family-internet-control>;
-- закрытый server/control/operator project: <https://github.com/kva4991/sheepfold-support-server>.
+На 10.10.2026 GitHub API подтвердил переименование владельца в `hayOfLife` для обоих
+проектов. Публичные manifests и навигационные ссылки актуализированы; историческое
+имя в ADR-0023 сохранено. Это смена адреса, не протокола или ключей доверия.
+Перед совместным выпуском обязательно синхронизировать private peer manifests и
+проверить vendor hashes: в этом локальном проходе серверный репозиторий не изменялся,
+сквозная совместимость с ним не объявляется подтверждённой.
+
+- этот публичный клиентский проект: <https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control>;
+- закрытый server/control/operator project: <https://github.com/hayOfLife/sheepfold-support-server>.
 
 Если у агента есть доступ только к Sheepfold, этот документ, `tools/remoteSupport/peer-project.json` и `§rsup001` дают полную границу взаимодействия. Недоступность private repo не разрешает придумывать server behavior или объявлять его готовым.
 
@@ -105,7 +112,7 @@ Codex не подключается к публичному control plane нап
 Private repo нельзя добавлять submodule в public Sheepfold. Агент с GitHub-доступом клонирует его рядом:
 
 ```powershell
-gh repo clone kva4991/sheepfold-support-server C:\path\to\sheepfold-support-server
+gh repo clone hayOfLife/sheepfold-support-server C:\path\to\sheepfold-support-server
 node tools\remoteSupport\checkPeerContract.mjs --peer C:\path\to\sheepfold-support-server
 ```
 

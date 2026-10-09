@@ -509,7 +509,7 @@ support_text() {
         printf '- версию OpenWRT/LuCI, если она видна внизу страницы LuCI\n'
         printf '- что нажимали и какой текст ошибки увидели\n'
         printf '- последние строки журнала Sheepfold без токенов и паролей\n\n'
-        printf 'GitHub проекта: https://github.com/kva4991/luci-app-sheepfold-family-internet-control\n'
+        printf 'GitHub проекта: https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control\n'
         printf 'Если проблема срочная: откройте LuCI локально и временно выключите спорное правило.'
 }
 

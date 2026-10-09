@@ -26,7 +26,7 @@ The installer performs the first-run questions, detects AdGuard Home/Podkop, dow
 It first asks for application language (`ru` by default, `en` for English), country profile, the Sheepfold product, user-agreement consent, and automation mode. `Maximum automation` is the default and applies the coherent recommended profile for new-device access, full detection, automatic system groups, and identity monitoring. `Selective automation` exposes the individual choices in LuCI and starts with reduced device detection.
 
 ```sh
-wget -O /tmp/sheepfold-install.sh https://raw.githubusercontent.com/kva4991/luci-app-sheepfold-family-internet-control/main/install.sh &&
+wget -O /tmp/sheepfold-install.sh https://raw.githubusercontent.com/hayOfLife/luci-app-sheepfold-family-internet-control/main/install.sh &&
 sh /tmp/sheepfold-install.sh
 ```
 
@@ -42,7 +42,7 @@ After the OpenWrt package is installed, the update script delegates to the insta
 Optional **Participate in beta testing** at the bottom of General settings enables hourly automatic updates from those published releases after confirmation and Save. It also enables SIM/new child Wi-Fi notifications, without enabling new location collection. It is off by default. See the [beta-testing contract](docs/maintenance-jobs.ru.md).
 
 ```sh
-wget -O /tmp/sheepfold-update.sh https://raw.githubusercontent.com/kva4991/luci-app-sheepfold-family-internet-control/main/update.sh &&
+wget -O /tmp/sheepfold-update.sh https://raw.githubusercontent.com/hayOfLife/luci-app-sheepfold-family-internet-control/main/update.sh &&
 sh /tmp/sheepfold-update.sh
 ```
 
@@ -51,7 +51,7 @@ sh /tmp/sheepfold-update.sh
 The uninstaller removes the OpenWRT package, keeps Sheepfold settings and client lists, and prints a report of remaining router settings.
 
 ```sh
-wget -O /tmp/sheepfold-uninstall.sh https://raw.githubusercontent.com/kva4991/luci-app-sheepfold-family-internet-control/main/uninstall.sh &&
+wget -O /tmp/sheepfold-uninstall.sh https://raw.githubusercontent.com/hayOfLife/luci-app-sheepfold-family-internet-control/main/uninstall.sh &&
 sh /tmp/sheepfold-uninstall.sh
 ```
 

@@ -4,7 +4,7 @@ PKG_NAME:=sheepfold-message-relay-crypto
 PKG_VERSION:=0.1.0
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
-PKG_MAINTAINER:=kva4991
+PKG_MAINTAINER:=hayOfLife
 PKG_ASLR_PIE_REGULAR:=1
 
 include $(INCLUDE_DIR)/package.mk

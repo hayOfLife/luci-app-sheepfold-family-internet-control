@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-OWNER="kva4991"
+OWNER="hayOfLife"
 REPO="luci-app-sheepfold-family-internet-control"
 PACKAGE="luci-app-sheepfold-family-internet-control"
 

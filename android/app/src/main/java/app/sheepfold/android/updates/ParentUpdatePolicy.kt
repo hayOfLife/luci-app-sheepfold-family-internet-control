@@ -7,7 +7,7 @@ internal data class AppIdentity(val packageName: String, val versionCode: Long, 
 
 /** Независимый от роутера канал: GitHub доставляет файл, доверие задаёт подпись уже установленного APK. */
 internal object ParentUpdatePolicy {
-    const val repository = "kva4991/luci-app-sheepfold-family-internet-control"
+    const val repository = "hayOfLife/luci-app-sheepfold-family-internet-control"
     const val releasesUrl = "https://api.github.com/repos/$repository/releases?per_page=20"
     const val maxApkBytes = 128L * 1024 * 1024
     const val maxMetadataBytes = 1024L * 1024

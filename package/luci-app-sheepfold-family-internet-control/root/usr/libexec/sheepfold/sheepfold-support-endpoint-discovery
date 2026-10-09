@@ -9,7 +9,7 @@ IDENTITY_DIR='/etc/sheepfold/support-report'
 STATE_FILE="$IDENTITY_DIR/discovery-state"
 RUNTIME_DIR="${SHEEPFOLD_SUPPORT_RUNTIME_DIR:-/tmp/sheepfold/support-report}"
 CANDIDATE_FILE="$RUNTIME_DIR/discovery-candidate"
-DISCOVERY_URL='https://raw.githubusercontent.com/kva4991/luci-app-sheepfold-family-internet-control/main/docs/runtime-manifests/support-report-endpoint-v1.txt'
+DISCOVERY_URL='https://raw.githubusercontent.com/hayOfLife/luci-app-sheepfold-family-internet-control/main/docs/runtime-manifests/support-report-endpoint-v1.txt'
 MAX_MANIFEST_BYTES=2048
 MAX_SEQUENCE=2147483647
 

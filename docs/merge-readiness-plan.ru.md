@@ -14,6 +14,54 @@ runbook. Исторические проверки ниже не заменяю�
 а сам факт публикации/слияния не требует тестов незатронутых подсистем. Полный gate
 нужен только при неограничимом или сквозном impact, явном запросе либо release-gate.
 
+## Контрольная точка 10 октября 2026 года
+
+База `0f2f00f` / r324, исправления [B160–B162](bug-register.ru.md): новое имя GitHub
+в рабочих адресах, строгая проверка пути release asset в updater и bootstrap,
+уточнение гарантий установки. Не менялись ключи, UCI, firewall, правила доступа,
+нативная криптография и протоколы public/private peer. Нового выпуска или установки нет.
+
+Свежие проверки в Windows:
+
+- `test:smoke`: 87 тестов успешно.
+- Профильный runner из 9 файлов: 57 успешно, один Windows skip проверки native `flock`.
+- `documentationOperations.test.mjs`: 5 успешно; `quality:docs:all`: 299 Markdown-файлов.
+- ESLint и `sh -n` пяти изменённых shell entrypoints проходят.
+- JVM-тесты `ParentUpdatePolicyTest` и `ParentUpdateTransportTest` проходят через
+  wrapper с существующим Gradle-кешем и `--offline`; Kotlin родительского APK компилируется.
+- Android Lint не подтверждён: offline-запуск остановился на отсутствии закешированных
+  Compose UI-test/AndroidX AAR и coroutines-test, до выполнения анализа. Первая попытка
+  с новым кешем ожидала внешние зависимости и была остановлена; зависание не объявлено
+  ошибкой продукта. Не удалять кеш и не добавлять lint baseline ради обхода.
+
+Рассчитан `quality:changed -- --plan`. Полный агрегат намеренно не запускался:
+карта консервативно относит смену maintainer в native Makefile к криптографии, а ссылки
+в AGENTS/peer manifests к сквозным изменениям. По §testcat исполнены профильные проверки,
+а не незатронутые AI/firewall/child/native сценарии. Это не зелёный полный quality gate.
+Неизвестный карте `update.sh` проверен вручную: изменена только строка адреса установщика,
+делегирование установленному helper не менялось. Предупреждение длины transport-теста
+(599 строк) не скрыто; отдельный рефакторинг стенда в этот fix не включён.
+
+Команды из корня checkout, PowerShell с подготовленными Node/Git Bash/Python/JDK/SDK:
+
+```powershell
+node scripts/run-test-category.mjs --file updateTransportSafety.test.mjs --file installSettingsPreservation.test.mjs --file installLanguage.test.mjs --file supportReportTransport.test.mjs --file supportEndpointDiscovery.test.mjs --file remoteSupportPeerContract.test.mjs --file familyMessageRelayArchitecture.test.mjs --file productVariants.test.mjs --file androidParentManagement.test.mjs
+node --test tests/documentationOperations.test.mjs
+$env:GRADLE_USER_HOME = Join-Path $env:USERPROFILE '.gradle'
+android\gradlew.bat -p android :app:testDebugUnitTest --tests app.sheepfold.android.updates.ParentUpdatePolicyTest --tests app.sheepfold.android.updates.ParentUpdateTransportTest -Pkotlin.compiler.execution.strategy=in-process --offline --no-daemon --max-workers=2 --console=plain
+```
+
+Ожидаются exit 0, `fail 0` у Node и `BUILD SUCCESSFUL` у JVM; один указанный skip
+на Windows допустим. Меняются только тестовые временные файлы и build/cache;
+роутер, телефон, сервер и GitHub Releases не затрагиваются. Не запускать updater
+на компьютере вместо fixture. `--offline` требует заранее заполненного кеша;
+не использовать этот режим как обещание работы на свежем компьютере. При Git
+`dubious ownership` применять [процессное исключение только проверенного checkout](agent-environment.ru.md#git-отказывает-из-за-владельца-checkout).
+
+Открыто перед выпуском: повтор Android Lint с доступными зависимостями, отдельные
+APK/SDK-сборки и разовый переход установленных старых клиентов, живой OpenWrt,
+сверка private peer/vendor. Локальные результаты не заменяют эти проверки.
+
 ## Контрольная точка 9 сентября 2026 года: исправления r295
 
 База `e1084e1`, изменения B50–B53. [Отчёт r295](audit-fixes-r295.ru.md) фиксирует
@@ -174,12 +222,12 @@ merge сам по себе не разрешает их публикацию и�
 
 - локальный `quality:gate`: `passed`, все 123 test-файла; один Windows skip для
   `manualAndBetaOperationsRespectTheSameLiveLock`, без ошибок;
-- [Validate Sheepfold](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/actions/runs/33376493683):
+- [Validate Sheepfold](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/actions/runs/33376493683):
   793/793 Node tests на Linux, без skips; Lint и сборки обоих Android APK;
 - родитель `0.1.56`: повторные 48/48 component/menu/preview на API 30 и 87/87 JVM;
   [подробности и границы](android-test-lab.ru.md#повтор-перед-слиянием-на-версии-0156);
 - оба локальных test-IPK собраны; для 25.12 они не используются как установочные APK.
-- [SDK matrix](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/actions/runs/33376490133):
+- [SDK matrix](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/actions/runs/33376490133):
   все четыре пакета успешны; Standard r284 установлен с backup; 13 router read-only,
   9 paired-read и LuCI desktop/mobile прошли. Сетевые конфиги и привязка сохранены.
   Сценарии `writeSafe/fullSafe`, запись Wi-Fi и relay E2E в этот проход не входили.

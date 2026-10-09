@@ -99,7 +99,7 @@ production-развёртывания нельзя подставлять слу
 Исключение: структурированный `503` с `error=serverMaintenance` означает, что действующий сервер
 достиг безопасного лимита хранения; для него endpoint discovery не запускается:
 
-`https://raw.githubusercontent.com/kva4991/luci-app-sheepfold-family-internet-control/main/docs/runtime-manifests/support-report-endpoint-v1.txt`
+`https://raw.githubusercontent.com/hayOfLife/luci-app-sheepfold-family-internet-control/main/docs/runtime-manifests/support-report-endpoint-v1.txt`
 
 Это не чтение README и не поиск URL в произвольном JSON. Файл имеет четыре строки, строгий ASCII
 формат, возрастающий sequence и Ed25519 signature. Public verification key заранее закреплён в

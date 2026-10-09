@@ -19,6 +19,15 @@ v1 установлен на тестовый OpenWrt: проверены firewa
 
 ## Что реализовано в коде v1
 
+**Сверка main от 10.10.2026:** обсуждённое с владельцем объединение сетевых профилей
+одного родительского телефона пока отсутствует в этой версии. `sheepfold-token-common`
+сравнивает наблюдаемый MAC с MAC записи токена; это не готовое хранилище aliases.
+Согласованное направление остаётся задачей: новое подтверждённое подключение с ранее
+выданным credential должно дополнять одну логическую карточку, а не создавать вторую;
+IP/last seen преимущественно хранятся в RAM. Перед реализацией нужны отдельные проверки
+отзыва, подмены MAC, сетевого источника и карантина. Не удалять проверку источника
+в текущем helper под видом исправления документации и не обещать работу при смене MAC.
+
 Изменения 31.08.2026: router r286, parent APK 0.1.61 (62). Режим выключен по умолчанию,
 только для parent APK и прямого IPv4-сегмента на логическом интерфейсе `wan` с протоколом
 `dhcp` или `static`. Произвольные VLAN, NAT relay, VPN и child APK не добавлены.
@@ -194,8 +203,8 @@ netifd/jshn, `nft --check` для ограниченного правила и �
 `C:\Users\User\Documents\pesochnica\sheepfold-temp\home-network-r286-20260831211647\private`.
 
 Далее 31.08.2026 официальный SDK собрал все четыре пакета r286 из commit `820f363`
-ветки `codex/home-network-r286`: [сборка SDK](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/actions/runs/33424698775),
-[общая CI-проверка](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/actions/runs/33424807657).
+ветки `codex/home-network-r286`: [сборка SDK](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/actions/runs/33424698775),
+[общая CI-проверка](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/actions/runs/33424807657).
 Standard OpenWrt APK имеет SHA-256
 `3f5a5c42834d7d8d9bd5f0b32ee9fe4c733635ca1142c09528d48f7b616cea54`.
 Установка на OpenWrt 25.12.5 завершилась успешно, 13/13 read-only checks прошли;

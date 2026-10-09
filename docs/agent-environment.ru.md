@@ -46,6 +46,38 @@ git remote -v
 
 Не откатывай чужие изменения без прямой просьбы владельца проекта.
 
+### Git отказывает из-за владельца checkout
+
+Если `git status` сообщает `dubious ownership`, а Node quality-runner показывает
+`Not a git repository`, сначала проверить фактический каталог и владельца. Не менять
+ACL и не добавлять глобальное `safe.directory=*`. Для уже проверенного checkout
+достаточно процессного исключения, наследуемого дочерним Git:
+
+```powershell
+$repo = 'C:/Users/User/Documents/pesochnica/sheepfold-r297-review'
+git -c "safe.directory=$repo" -C $repo status --short --branch
+```
+
+Только после успешного результата, из того же корня репозитория, если переменные
+`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0` ещё не заданы:
+
+```powershell
+$env:GIT_CONFIG_COUNT = '1'
+$env:GIT_CONFIG_KEY_0 = 'safe.directory'
+$env:GIT_CONFIG_VALUE_0 = $repo
+try {
+    npm.cmd run quality:plan
+} finally {
+    Remove-Item Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0
+}
+```
+
+Ожидается exit 0 с перечнем изменённых областей. Только окружение этого PowerShell
+временно меняется; глобальная Git-конфигурация и файлы проекта не затрагиваются.
+Не перезаписывать существующий `GIT_CONFIG_COUNT`: сначала выяснить его назначение.
+Это настройка доверия к проверенному локальному checkout, не исправление дефекта
+продукта и не разрешение доверять любой загруженной копии.
+
 ### Смена регистра имени файла на Windows
 
 На регистронезависимой файловой системе нельзя считать `Name.kt` и `name.kt` двумя
@@ -477,7 +509,7 @@ Quality-step идёт до изменяющего права `runtime-hardening`
 
 ```powershell
 gh auth login
-gh run view <run-id> --repo kva4991/luci-app-sheepfold-family-internet-control --log-failed
+gh run view <run-id> --repo hayOfLife/luci-app-sheepfold-family-internet-control --log-failed
 ```
 
 ## Live-router тесты

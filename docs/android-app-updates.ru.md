@@ -46,7 +46,20 @@
 
 ## Источник и безопасность
 
-- Фиксированный endpoint: `https://api.github.com/repos/kva4991/luci-app-sheepfold-family-internet-control/releases?per_page=20`.
+10.10.2026 фиксированный канал переведён с `kva4991` на подтверждённое имя `hayOfLife`.
+Старый API возвращает 301; Android намеренно не следует metadata redirect, а старый
+asset-префикс не принимает новые ссылки. Исправлены обе константы через единый
+`ParentUpdatePolicy.repository`, без изменения TLS, SHA-256 и проверки подписанта.
+`ParentUpdatePolicyTest` использует также буквальный новый URL, чтобы тест не менял
+ожидаемый результат вместе с ошибочной production-константой, и отклоняет старый owner.
+
+Это правка исходников, не опубликованный APK. Уже установленная версия
+со старым каналом не сможет получить исправление собственной кнопкой: после отдельной
+сборки/публикации понадобится одно ручное обновление APK с тем же подписантом и большим
+`versionCode`, без удаления приложения и его данных. Старый кеш обновления с прежним URL
+не мигрируется в доверенный автоматически; после обновления канала файл можно скачать заново.
+
+- Фиксированный endpoint: `https://api.github.com/repos/hayOfLife/luci-app-sheepfold-family-internet-control/releases?per_page=20`.
 - Только 20 возвращённых релизов без `draft` и `prerelease`; выбирается самая высокая
   числовая версия родительского APK. Последний релиз роутера без Android-файла не скрывает
   предыдущий родительский релиз внутри этого ограниченного окна.
@@ -139,7 +152,7 @@ package ID, возрастающий versionCode и SHA-256. После загр
 
 Проверенный результат публикации 31.08.2026:
 
-- [Экспериментальный релиз с APK](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/releases/tag/v0.1.0-experimental.1).
+- [Экспериментальный релиз с APK](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/releases/tag/v0.1.0-experimental.1).
 - Исходники: `61bbd7b31092775a6255a3b032718405e1345078`; сборка `:app:exportDebugApk`.
 - Размер: `34948252` байта. SHA-256: `0887bb530ea789e464ce4141617d700768c830ca38be1e3941644949290bc5d0`.
 - SHA-256 сертификата: `5d109098ca2d218213d49d055782f53b7bc9bd599b1a163c28010a6343055076`.
@@ -152,7 +165,7 @@ package ID, возрастающий versionCode и SHA-256. После загр
 - Сборка, 102 JVM-теста и Lint прошли (0 ошибок, прежние 84 предупреждения).
   23 профильных Node-теста прошли; packaging-проверка с дочерним Python потребовала
   user-context запуска после `spawnSync python EPERM` в песочнице.
-  [CI исходного commit](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/actions/runs/33392580508)
+  [CI исходного commit](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/actions/runs/33392580508)
   завершился успешно; проверка документации охватила 250 Markdown-файлов.
 
 Ожидаемый ручной результат публикации: установленный `0.1.57` находит `0.1.58`, скачивает его,
@@ -164,7 +177,7 @@ Android предлагает обновление, а после подтвер�
 ### Публикация исправления 0.1.59
 
 По отдельному подтверждению владельца 31.08.2026 опубликован
-[тестовый родительский APK 0.1.59](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/releases/download/v0.1.0-experimental.1/sheepfold-parent-v0.1.59.apk).
+[тестовый родительский APK 0.1.59](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/releases/download/v0.1.0-experimental.1/sheepfold-parent-v0.1.59.apk).
 Исходники: `2025ec838705680645625d4833ec42a6e1f135e1`, отправлены в `main`.
 Файл добавлен в тот же экспериментальный контейнер; старые APK/IPK не заменялись.
 
@@ -179,7 +192,7 @@ Android предлагает обновление, а после подтвер�
   Описание дополнено инструкцией и отдельным commit APK, старый текст не удалён.
 - Перед push полный `quality:gate` прошёл все 123 test-файла: 795 тестов успешно,
   два Windows-specific skip, ошибок нет; Lint обоих APK также прошёл. Этот прогон
-  занял около 26 минут. [CI исходников](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/actions/runs/33406798664)
+  занял около 26 минут. [CI исходников](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/actions/runs/33406798664)
   завершился успешно, включая проверки и сборки обоих Android-приложений.
 
 Локальные доказательства: `.build/parent-0159-publication-gate.txt` и

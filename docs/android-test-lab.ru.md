@@ -383,7 +383,7 @@ JVM XML и Lint в `android/app/build/`. Синтетическая карточ
 Детский APK `1.15` / code `16` собран; его `testDebugUnitTest` вернул `NO-SOURCE`,
 поэтому это не подтверждение детских JVM-тестов. Детское приложение на родительский
 телефон не устанавливалось. Оба APK прошли Android Lint и сборку в
-[CI для коммита 32ffa90](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/actions/runs/33376493683).
+[CI для коммита 32ffa90](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/actions/runs/33376493683).
 
 Локальные отчёты этого повтора: `.build/premerge-phone-ui-final.txt`,
 `.build/premerge-parent.txt`, `.build/premerge-child.txt`. Успех компонентных тестов

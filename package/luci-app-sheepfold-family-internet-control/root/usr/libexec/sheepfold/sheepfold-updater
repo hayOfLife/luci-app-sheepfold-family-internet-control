@@ -2,7 +2,7 @@
 set -eu
 
 COMMAND="${1:-check}"
-OWNER="kva4991"
+OWNER="hayOfLife"
 REPO="luci-app-sheepfold-family-internet-control"
 case "$0" in
         */*) SCRIPT_DIR="${0%/*}" ;;
@@ -224,22 +224,39 @@ latest_package_version() {
 }
 
 trusted_package_url() {
-        # Одного JSON от API недостаточно: устанавливаем только asset из официального
-        # release path и с точным префиксом выбранной редакции (§updsafe).
+        # Проверяем весь путь: один префикс не защищает от нормализации ../ загрузчиком
+        candidate_url="$1"
         trusted_prefix="https://github.com/${OWNER}/${REPO}/releases/download/"
+        case "$candidate_url" in
+                "$trusted_prefix"*) ;;
+                *) return 1 ;;
+        esac
+
+        release_path="${candidate_url#"$trusted_prefix"}"
+        case "$release_path" in */*) ;; *) return 1 ;; esac
+        release_tag="${release_path%%/*}"
+        release_asset="${release_path#*/}"
+        case "$release_tag" in
+                ''|.|..|*[!a-zA-Z0-9._+-]*) return 1 ;;
+        esac
+        case "$release_asset" in
+                ''|*[!a-zA-Z0-9._+~-]*) return 1 ;;
+        esac
+
         case "$PACKAGE_MANAGER" in
                 opkg)
-                        case "$PACKAGE_URL" in
-                                "$trusted_prefix"*/"${ASSET_PACKAGE}_"*_all.ipk) return 0 ;;
+                        case "$release_asset" in
+                                "${ASSET_PACKAGE}_"*_all.ipk) return 0 ;;
                                 *) return 1 ;;
                         esac
                         ;;
                 apk)
-                        case "$PACKAGE_URL" in
-                                "$trusted_prefix"*/"${ASSET_PACKAGE}-"*.apk) return 0 ;;
+                        case "$release_asset" in
+                                "${ASSET_PACKAGE}-"*.apk) return 0 ;;
                                 *) return 1 ;;
                         esac
                         ;;
+                *) return 1 ;;
         esac
 }
 
@@ -527,7 +544,7 @@ read_release_info() {
                 return 1
         fi
 
-        if ! trusted_package_url; then
+        if ! trusted_package_url "$PACKAGE_URL"; then
                 say untrusted_package_url >&2
                 return 1
         fi

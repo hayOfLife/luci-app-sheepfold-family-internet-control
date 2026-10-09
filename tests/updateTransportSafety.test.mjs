@@ -1,3 +1,8 @@
+/*
+ * Проверяет обновлятор с настоящим тестовым IPK и подменёнными HTTP/UCI/package manager
+ * Меняет только fixture в .build/test-tmp; сеть и установленный роутер не затрагивает
+ * Успех подтверждает URL/ошибки/откат модели, но не подпись выпуска или живой OpenWrt
+ */
 import {
   chmodSync,
   existsSync,
@@ -92,7 +97,7 @@ function runInstallScenario({
   writeFileSync(fetchLog, '');
   writeFileSync(config, 'config original\n', 'utf8');
   const releasePackageUrl = packageUrl
-    || `https://github.com/kva4991/luci-app-sheepfold-family-internet-control/releases/download/test/${assetName}`;
+    || `https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/releases/download/test/${assetName}`;
   writeFileSync(release, JSON.stringify({
     tag_name: 'test',
     browser_download_url: releasePackageUrl,
@@ -157,7 +162,7 @@ esac
   const bash = process.platform === 'win32'
     ? 'C:\\Program Files\\Git\\bin\\bash.exe'
     : 'bash';
-  const updateApiUrl = 'https://api.github.com/repos/kva4991/luci-app-sheepfold-family-internet-control/releases/latest';
+  const updateApiUrl = 'https://api.github.com/repos/hayOfLife/luci-app-sheepfold-family-internet-control/releases/latest';
   const args = lockHeld ? ['-c', 'exec 9>"$UPDATE_LOCK"; flock -n 9 || exit 90; bash "$TEST_UPDATER" "$TEST_COMMAND" 9>&-']
     : [posix(relative(repoRoot, updater)), command];
   const result = spawnSync(bash, args, {
@@ -209,14 +214,14 @@ function runApkInstallScenario({ metadataName = 'luci-app-sheepfold-family-inter
   const jshn = join(root, 'jshn.sh');
   const expectedVersion = '9.9.9-r1';
   const routerAsset = `luci-app-sheepfold-family-internet-control-${expectedVersion}.apk`;
-  const routerUrl = `https://github.com/kva4991/luci-app-sheepfold-family-internet-control/releases/download/test/${routerAsset}`;
+  const routerUrl = `https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/releases/download/test/${routerAsset}`;
   mkdirSync(bin, { recursive: true });
   writeFileSync(config, 'config original\n', 'utf8');
   writeFileSync(packageSource, 'fake OpenWrt apk container\n', 'utf8');
   writeFileSync(release, JSON.stringify({
     tag_name: 'test',
     assets: [
-      { browser_download_url: 'https://github.com/kva4991/luci-app-sheepfold-family-internet-control/releases/download/test/sheepfold-v9.9.9.apk' },
+      { browser_download_url: 'https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/releases/download/test/sheepfold-v9.9.9.apk' },
       { browser_download_url: routerUrl },
     ],
   }, null, 2) + '\n', 'utf8');
@@ -290,7 +295,7 @@ json_get_var() {
   const bash = process.platform === 'win32'
     ? 'C:\\Program Files\\Git\\bin\\bash.exe'
     : 'bash';
-  const updateApiUrl = 'https://api.github.com/repos/kva4991/luci-app-sheepfold-family-internet-control/releases/latest';
+  const updateApiUrl = 'https://api.github.com/repos/hayOfLife/luci-app-sheepfold-family-internet-control/releases/latest';
   const result = spawnSync(bash, [posix(relative(repoRoot, updater)), 'install'], {
     cwd: repoRoot,
     env: {
@@ -321,6 +326,82 @@ json_get_var() {
 }
 
 describe('network transport safety', () => {
+  it('bootstrapAndUpdaterShareABoundedReleaseUrlPolicy', () => {
+    const source = readFileSync(updater, 'utf8');
+    const installer = readFileSync(join(repoRoot, 'install.sh'), 'utf8');
+    const functionPattern = /^trusted_package_url\(\) \{\r?\n[\s\S]*?^\}/m;
+    const policy = source.match(functionPattern)[0].replaceAll('\r\n', '\n');
+    assert.equal(installer.match(functionPattern)[0].replaceAll('\r\n', '\n'), policy);
+    assert.ok(installer.indexOf('if ! trusted_package_url "$package_url"') <
+      installer.indexOf('if ! fetch_to_file "$package_url"'));
+
+    const repository = 'hayOfLife/luci-app-sheepfold-family-internet-control';
+    const prefix = `https://github.com/${repository}/releases/download/`;
+    for (const [manager, assetName] of [
+      ['opkg', 'luci-app-sheepfold-family-internet-control_1.2.3-4_all.ipk'],
+      ['apk', 'luci-app-sheepfold-family-internet-control-1.2.3-r4.apk'],
+      ['opkg', 'luci-app-sheepfold-ai-support_1.2.3-4_all.ipk'],
+      ['apk', 'luci-app-sheepfold-ai-support-1.2.3-r4.apk'],
+    ]) {
+      const validUrl = `${prefix}v1.2.3+test/${assetName}`;
+      const cases = [
+        [validUrl, 0],
+        [validUrl.replace('hayOfLife/', 'kva4991/'), 1],
+        [validUrl.replace('github.com/', 'github.com.evil.invalid/'), 1],
+        [validUrl.replace('https:', 'http:'), 1],
+        [`${prefix}${assetName}`, 1],
+        [`${prefix}./${assetName}`, 1],
+        [`${prefix}../${assetName}`, 1],
+        [`${prefix}%2e%2e/${assetName}`, 1],
+        [`${prefix}tag/extra/${assetName}`, 1],
+        [`${prefix}tag\\extra/${assetName}`, 1],
+        [`${prefix}tag?x=/${assetName}`, 1],
+        [`${prefix}tag#fragment/${assetName}`, 1],
+        [`${prefix}tag\n/${assetName}`, 1],
+        [validUrl.replace(assetName, 'sheepfold-parent-v1.2.3.apk'), 1],
+      ];
+      for (const [url, expected] of cases) {
+        const result = spawnSync('sh', ['-s'], {
+          cwd: repoRoot,
+          env: { ...process.env, OWNER: 'hayOfLife', REPO: repository.split('/')[1],
+            PACKAGE_MANAGER: manager, ASSET_PACKAGE: assetName.startsWith('luci-app-sheepfold-ai-support')
+              ? 'luci-app-sheepfold-ai-support' : 'luci-app-sheepfold-family-internet-control', TEST_URL: url },
+          input: `${policy}\ntrusted_package_url "$TEST_URL"\n`, encoding: 'utf8', timeout: 10000,
+        });
+        assert.equal(result.error, undefined, result.error?.message);
+        assert.equal(result.status, expected, `${manager} ${url}: ${result.stderr}`);
+      }
+    }
+  });
+
+  it('acceptsTheRenamedRepositoryReleasePath', () => {
+    const assetName = basename(testIpk());
+    const run = runInstallScenario({
+      packageUrl: `https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/releases/download/test/${assetName}`,
+      installExit: 0,
+      confirmInstalledVersion: true,
+    });
+
+    assert.equal(run.result.status, 0, run.result.stderr || run.result.stdout);
+    assert.match(readFileSync(run.opkgLog, 'utf8'), /^install /m);
+  });
+
+  it('rejectsReleasePathTraversalBeforeDownloadingOrInstalling', () => {
+    const assetName = basename(testIpk());
+    const owner = readFileSync(updater, 'utf8').match(/^OWNER="([^"]+)"/m)[1];
+    const prefix = `https://github.com/${owner}/luci-app-sheepfold-family-internet-control/releases/download/`;
+    const run = runInstallScenario({
+      packageUrl: `${prefix}../../../../other/project/releases/download/test/${assetName}`,
+      installExit: 0,
+      confirmInstalledVersion: true,
+    });
+
+    assert.equal(run.result.status, 1, run.result.stderr || run.result.stdout);
+    assert.equal(readFileSync(run.fetchLog, 'utf8').trim().split('\n').length, 1);
+    assert.equal(existsSync(run.opkgLog), false);
+    assert.equal(readFileSync(run.config, 'utf8'), 'config original\n');
+  });
+
   it('betaUpdaterRequiresOptInAndSkipsAnEqualOrOlderRelease', () => {
     const disabled = runInstallScenario({ command: 'install-beta-foreground' });
     assert.equal(disabled.result.status, 4, disabled.result.stderr);

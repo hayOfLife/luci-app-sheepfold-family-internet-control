@@ -1,3 +1,7 @@
+/*
+ * Проверяет границу APK -> роутер -> support server по исходникам и public defaults
+ * Только чтение; не отправляет данные и не заменяет Android HPKE или живой HTTPS-тест
+ */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
@@ -8,12 +12,6 @@ const pkg = resolve(root, 'package/luci-app-sheepfold-family-internet-control');
 const read = (path) => readFileSync(resolve(root, path), 'utf8');
 const readPkg = (path) => readFileSync(resolve(pkg, path), 'utf8');
 
-/*
- * Назначение: защищает границу APK -> домашний роутер -> support server.
- * Вход: исходники Android, CGI, shell helper и шаблоны UCI.
- * Выход: подтверждение маршрута, криптографического набора и запрета plaintext.
- * Ограничение: не заменяет Android HPKE instrumentation test и живой HTTPS server.
- */
 describe('encrypted support report transport', () => {
   it('keeps report endpoints authenticated and separately rate limited', () => {
     const api = readPkg('root/www/cgi-bin/sheepfold-api');
@@ -49,7 +47,7 @@ describe('encrypted support report transport', () => {
   it('uses only a signed rollback-protected GitHub endpoint fallback', () => {
     const helper = readPkg('root/usr/libexec/sheepfold/sheepfold-support-report');
     const discovery = readPkg('root/usr/libexec/sheepfold/sheepfold-support-endpoint-discovery');
-    assert.match(discovery, /raw\.githubusercontent\.com\/kva4991\/luci-app-sheepfold-family-internet-control\/main\/docs\/runtime-manifests\/support-report-endpoint-v1\.txt/);
+    assert.match(discovery, /raw\.githubusercontent\.com\/hayOfLife\/luci-app-sheepfold-family-internet-control\/main\/docs\/runtime-manifests\/support-report-endpoint-v1\.txt/);
     assert.match(discovery, /openssl pkeyutl -verify -rawin -pubin -keyform DER/);
     assert.match(discovery, /manifest_sequence[^\n]*-ge[^\n]*accepted_sequence/);
     assert.match(discovery, /manifest_sequence[^\n]*-eq[^\n]*accepted_sequence/);

@@ -3,13 +3,13 @@
 Repository:
 
 ```text
-https://github.com/kva4991/luci-app-sheepfold-family-internet-control
+https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control
 ```
 
 ## Public install
 
 ```sh
-wget -O /tmp/sheepfold-install.sh https://raw.githubusercontent.com/kva4991/luci-app-sheepfold-family-internet-control/main/install.sh &&
+wget -O /tmp/sheepfold-install.sh https://raw.githubusercontent.com/hayOfLife/luci-app-sheepfold-family-internet-control/main/install.sh &&
 sh /tmp/sheepfold-install.sh
 ```
 
@@ -19,14 +19,31 @@ Support, detects the router package manager, and downloads the matching format:
 - OpenWrt 24.10 and older: `.ipk` installed by `opkg`;
 - OpenWrt 25.12 and newer: a real OpenWrt `.apk` installed by apk-tools v3.
 
-It does not confuse an OpenWrt APK with an Android APK. Package URLs must match
-the expected Sheepfold release-asset prefix, format, internal package name,
-version, and architecture.
+It does not confuse an OpenWrt APK with an Android APK. Before downloading, the
+bootstrap checks the exact Sheepfold repository path, a single safe release tag,
+and the selected edition's package filename/extension. The system package manager
+then processes the downloaded package. Unlike the installed updater, `install.sh`
+does not yet independently validate all internal package metadata or archive paths.
+Do not describe these two entry points as providing identical verification.
+
+## GitHub account rename
+
+The canonical owner is `hayOfLife` (verified on 2026-10-10). Old `kva4991` API URLs
+redirect, while release metadata already contains the new owner. New source URLs,
+Android metadata requests and router release-path checks must change together;
+arbitrary redirects or a second permanently trusted owner are not a migration strategy.
+The [update safety contract](update-safety.ru.md) records the compatibility limits.
+
+The `update.sh` wrapper still delegates to the **installed** updater. It cannot repair
+an older helper that rejects the renamed release URLs. After a separately approved
+build/publication, install the verified replacement locally while preserving settings.
+Do not fetch and execute an arbitrary remote helper as a bypass. The latest release
+observed on 2026-10-10 still contains the historical r58 IPK; a source fix is not a release.
 
 ## Public uninstall
 
 ```sh
-wget -O /tmp/sheepfold-uninstall.sh https://raw.githubusercontent.com/kva4991/luci-app-sheepfold-family-internet-control/main/uninstall.sh &&
+wget -O /tmp/sheepfold-uninstall.sh https://raw.githubusercontent.com/hayOfLife/luci-app-sheepfold-family-internet-control/main/uninstall.sh &&
 sh /tmp/sheepfold-uninstall.sh
 ```
 
@@ -76,7 +93,7 @@ not receive router assets because the updater deliberately follows
 ## Updating an installed router
 
 ```sh
-wget -O /tmp/sheepfold-update.sh https://raw.githubusercontent.com/kva4991/luci-app-sheepfold-family-internet-control/main/update.sh &&
+wget -O /tmp/sheepfold-update.sh https://raw.githubusercontent.com/hayOfLife/luci-app-sheepfold-family-internet-control/main/update.sh &&
 sh /tmp/sheepfold-update.sh
 ```
 

@@ -1,6 +1,7 @@
+// Проверяет URL/версию/подпись на чистой модели без сети и изменения Android
+// Успех не доказывает TLS, установку APK и сохранность данных на физическом телефоне
 package app.sheepfold.android.updates
 
-// Проверяет доверие к APK/версии/URL без сети, Android installer или тестовых ключей в репозитории.
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -11,6 +12,14 @@ class ParentUpdatePolicyTest {
     private val release = ParentUpdatePolicy.release(name, prefix + name, 100, digest)!!
     private val installed = AppIdentity("app.sheepfold.android", 57, "0.1.56", setOf("signature"))
     private val archive = installed.copy(versionCode = 58, versionName = "0.2.0")
+
+    @Test fun renamedRepositoryIsTheOnlyReleaseSource() {
+        assertEquals("hayOfLife/luci-app-sheepfold-family-internet-control", ParentUpdatePolicy.repository)
+        assertNotNull(ParentUpdatePolicy.release(name,
+            "https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/releases/download/v2/$name", 100, digest))
+        assertNull(ParentUpdatePolicy.release(name,
+            "https://github.com/kva4991/luci-app-sheepfold-family-internet-control/releases/download/v2/$name", 100, digest))
+    }
 
     @Test fun versionsAreNumericAndRejectAmbiguousFormats() {
         assertEquals(1, ParentUpdatePolicy.compareVersions("0.1.10", "0.1.9"))

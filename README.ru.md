@@ -26,7 +26,7 @@
 Он сначала спрашивает язык приложения (`ru` по умолчанию, `en` для английского), профиль страны, вариант Sheepfold, согласие с пользовательским соглашением и режим автоматизации. По умолчанию включается `Максимальная автоматизация`: согласованный рекомендуемый профиль доступа новых устройств, полного автоопределения, автоматических системных групп и мониторинга паспорта. `Выборочная автоматизация` открывает отдельные настройки в LuCI и начинает с уменьшенного автоопределения.
 
 ```sh
-wget -O /tmp/sheepfold-install.sh https://raw.githubusercontent.com/kva4991/luci-app-sheepfold-family-internet-control/main/install.sh &&
+wget -O /tmp/sheepfold-install.sh https://raw.githubusercontent.com/hayOfLife/luci-app-sheepfold-family-internet-control/main/install.sh &&
 sh /tmp/sheepfold-install.sh
 ```
 
@@ -42,7 +42,7 @@ sh /tmp/sheepfold-install.sh
 Галочка **«Участвовать в бетатесте»** внизу «Общие» после подтверждения и сохранения включает часовые автоматические обновления из этих опубликованных релизов и уведомления о SIM/новых Wi-Fi ребёнка, без нового сбора координат. По умолчанию выключена. Подробности: [бета-режим](docs/maintenance-jobs.ru.md).
 
 ```sh
-wget -O /tmp/sheepfold-update.sh https://raw.githubusercontent.com/kva4991/luci-app-sheepfold-family-internet-control/main/update.sh &&
+wget -O /tmp/sheepfold-update.sh https://raw.githubusercontent.com/hayOfLife/luci-app-sheepfold-family-internet-control/main/update.sh &&
 sh /tmp/sheepfold-update.sh
 ```
 
@@ -51,7 +51,7 @@ sh /tmp/sheepfold-update.sh
 Скрипт удаления убирает OpenWRT-пакет, сохраняет настройки Sheepfold и список клиентов, а затем показывает отчёт об оставшихся настройках на роутере.
 
 ```sh
-wget -O /tmp/sheepfold-uninstall.sh https://raw.githubusercontent.com/kva4991/luci-app-sheepfold-family-internet-control/main/uninstall.sh &&
+wget -O /tmp/sheepfold-uninstall.sh https://raw.githubusercontent.com/hayOfLife/luci-app-sheepfold-family-internet-control/main/uninstall.sh &&
 sh /tmp/sheepfold-uninstall.sh
 ```
 

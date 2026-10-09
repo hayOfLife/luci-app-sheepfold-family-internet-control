@@ -1,5 +1,27 @@
 # Current Implementation Status
 
+## Local audit on 2026-10-10
+
+Base: r324 / `0f2f00f`, matching GitHub main at the start of this audit. Source fixes
+[B160–B162](bug-register.ru.md) migrate active GitHub URLs to the verified owner
+`hayOfLife`, reject release path traversal and add the same bounded URL policy to
+the bootstrap installer. Android keeps metadata redirects disabled and preserves
+digest/package/signer checks. Installed old clients need a separately built local
+upgrade; changing source URLs alone does not repair them. The latest public router
+asset observed during this audit is still r58, not r324.
+
+The bootstrap still lacks the updater's independent internal archive validation;
+its documentation no longer claims otherwise. Parent network-profile merging
+discussed with the owner is not implemented in this main: token authentication
+still compares the observed MAC with the bound MAC. See the pending requirement in
+[home-network access](home-network-access.ru.md). Neither feature is marked complete.
+
+Fresh checks and remaining validation limits are recorded in the
+[audit checkpoint](merge-readiness-plan.ru.md#контрольная-точка-10-октября-2026-года).
+Source publication is separate from an APK/router release or deployment.
+
+## Accepted r324 baseline
+
 Current source decision, 2026-09-15: **r324**, selectively accepted from r323 and
 the review-time-confirmation patch. Both cloud `archive-push` commands fail closed
 before raw configuration export; direct journal `push-events` remains separate.
@@ -322,7 +344,7 @@ Parent build and Lint passed;
 102 JVM tests, 166 Android/API category checks and 13 API 28 emulator component tests passed.
 Lint reports 0 errors and 84 warnings; one new advisory concerns conservative usable-space checking.
 The full local quality gate passed all 123 Node test files: 794 passed, two Windows
-`flock` cases skipped. [Linux CI](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/actions/runs/33389723848)
+`flock` cases skipped. [Linux CI](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/actions/runs/33389723848)
 passed 796/796 without skips and built/linted both Android apps. The full documentation
 audit passed for 250 Markdown files.
 Parent debug `0.1.58` / code `59` was published on 2026-08-31 as a test-only APK in
@@ -342,7 +364,7 @@ same-signer verification and Android's final confirmation are unchanged. It was 
 2026-08-31 from `2025ec8`, without installing it on the physical phone. Anonymous GitHub metadata,
 downloaded bytes and signing certificate were verified; old assets and latest are unchanged.
 The full local quality gate passed all 123 test files (795 tests passed, two Windows skips),
-and [source CI](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/actions/runs/33406798664)
+and [source CI](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/actions/runs/33406798664)
 passed Android Lint/builds and its other checks. Build/Lint and all 102 local JVM tests passed;
 the focused updater/read-panel suite passed 27/27 on both API 28 and API 35.
 The broad emulator run was not green: five router-dependent tests had no discovered router,
@@ -559,7 +581,7 @@ The integrations follow-up extracted topology selection, site-filter executor co
 
 The same-day live-router device pass found and fixed two discovery boundaries: an empty DHCP hostname no longer shifts tab-separated fields and hides an online client, and `jshn` MAC keys from `hostapd.* get_clients` are converted back from underscores. A RAM-only DHCP lease fallback, a bounded supplemental OUI entry for `FC671F` Tuya, and a cautious privacy-MAC personal-phone hint were added without treating model, vendor, or owner as trusted identity (§devpas1).
 
-On 2026-07-21 the final `globalTest` pre-merge gate passed with 422 tests: 421 passed, one intentional concurrency test was skipped, and none failed. GitHub Actions run [29784939492](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/actions/runs/29784939492) successfully built and bundled Standard and AI Support packages through the official OpenWrt 24.10.7 IPK and 25.12.5 APK SDKs. The test router reported installed `0.1.0-r241`; read-only checks confirmed package/UCI version, pairing transaction semantics, executable files, discovery, TLS SPKI, router information, IPv6 state, `fw4 check`, and no pending UCI changes. The installed LuCI passed desktop/mobile browser checks without JavaScript/RPC errors or horizontal overflow; 109 non-blocking small-target warnings remain a dedicated mobile UX task. PR [#3](https://github.com/kva4991/luci-app-sheepfold-family-internet-control/pull/3) was then merged fast-forward into `main` at `c80cd09`; the post-merge Validate and four-package SDK workflows also passed (§qassist, §uxrev01, §roadmap).
+On 2026-07-21 the final `globalTest` pre-merge gate passed with 422 tests: 421 passed, one intentional concurrency test was skipped, and none failed. GitHub Actions run [29784939492](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/actions/runs/29784939492) successfully built and bundled Standard and AI Support packages through the official OpenWrt 24.10.7 IPK and 25.12.5 APK SDKs. The test router reported installed `0.1.0-r241`; read-only checks confirmed package/UCI version, pairing transaction semantics, executable files, discovery, TLS SPKI, router information, IPv6 state, `fw4 check`, and no pending UCI changes. The installed LuCI passed desktop/mobile browser checks without JavaScript/RPC errors or horizontal overflow; 109 non-blocking small-target warnings remain a dedicated mobile UX task. PR [#3](https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/pull/3) was then merged fast-forward into `main` at `c80cd09`; the post-merge Validate and four-package SDK workflows also passed (§qassist, §uxrev01, §roadmap).
 
 The next P1 modularization pass extracted `features/settings/general.js` and `features/settings/persistence.js`. The first owns only General-tab composition and draft transitions; the second validates and partitions one draft across named UCI sections through a narrow adapter. Runtime side-effect ordering remains centralized in `overview.js`, which decreased from about 5056 to 4770 physical lines. The complete Node suite passed with 424 tests: 423 passed, one intentional lock-concurrency test was skipped, and none failed. Fresh Standard and AI Support test packages and both prepared SDK feeds were used so package-boundary tests executed without the Windows sandbox `Node -> Python` restriction (§frontmod, §prodvar, §roadmap).
 

@@ -199,7 +199,7 @@ ensure_global_option grok_api_key ''
     control = f"""Package: {current_package}
 Version: {version}-{release}
 Architecture: all
-Maintainer: kva4991
+Maintainer: hayOfLife
 Depends: {dependencies}
 Conflicts: luci-app-sheepfold-ai-support
 Replaces: luci-app-sheepfold-ai-support

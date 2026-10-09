@@ -81,7 +81,7 @@ Before the first setup continues, the Android app must show a link to the full u
 Full agreement:
 
 ```text
-https://github.com/kva4991/luci-app-sheepfold-family-internet-control/blob/main/docs/user-agreement.ru.md
+https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/blob/main/docs/user-agreement.ru.md
 ```
 
 ## App Lock

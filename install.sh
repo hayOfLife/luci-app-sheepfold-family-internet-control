@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-OWNER="kva4991"
+OWNER="hayOfLife"
 REPO="luci-app-sheepfold-family-internet-control"
 INSTALLED_PACKAGE="luci-app-sheepfold-family-internet-control"
 LEGACY_AI_PACKAGE="luci-app-sheepfold-ai-support"
@@ -414,6 +414,44 @@ else
     echo "Existing Sheepfold settings were found and will be preserved."
 fi
 
+# Bootstrap ещё не имеет установленного helper; копию URL-политики сверяют transport-тесты
+trusted_package_url() {
+        # Проверяем весь путь: один префикс не защищает от нормализации ../ загрузчиком
+        candidate_url="$1"
+        trusted_prefix="https://github.com/${OWNER}/${REPO}/releases/download/"
+        case "$candidate_url" in
+                "$trusted_prefix"*) ;;
+                *) return 1 ;;
+        esac
+
+        release_path="${candidate_url#"$trusted_prefix"}"
+        case "$release_path" in */*) ;; *) return 1 ;; esac
+        release_tag="${release_path%%/*}"
+        release_asset="${release_path#*/}"
+        case "$release_tag" in
+                ''|.|..|*[!a-zA-Z0-9._+-]*) return 1 ;;
+        esac
+        case "$release_asset" in
+                ''|*[!a-zA-Z0-9._+~-]*) return 1 ;;
+        esac
+
+        case "$PACKAGE_MANAGER" in
+                opkg)
+                        case "$release_asset" in
+                                "${ASSET_PACKAGE}_"*_all.ipk) return 0 ;;
+                                *) return 1 ;;
+                        esac
+                        ;;
+                apk)
+                        case "$release_asset" in
+                                "${ASSET_PACKAGE}-"*.apk) return 0 ;;
+                                *) return 1 ;;
+                        esac
+                        ;;
+                *) return 1 ;;
+        esac
+}
+
 fetch_to_file() {
     url="$1"
     destination="$2"
@@ -451,6 +489,11 @@ case "$PACKAGE_MANAGER" in
 esac
 if [ -z "$package_url" ]; then
     echo "ERROR: The latest stable release does not contain the Sheepfold OpenWrt .${PACKAGE_EXTENSION} package." >&2
+    exit 1
+fi
+
+if ! trusted_package_url "$package_url"; then
+    echo "ERROR: Package URL is outside the official Sheepfold release path." >&2
     exit 1
 fi
 

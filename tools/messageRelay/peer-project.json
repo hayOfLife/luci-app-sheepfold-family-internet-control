@@ -3,18 +3,18 @@
   "contractId": "sheepfold.family-message-relay.peer.v1",
   "thisProject": {
     "name": "luci-app-sheepfold-family-internet-control",
-    "repository": "https://github.com/kva4991/luci-app-sheepfold-family-internet-control",
+    "repository": "https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control",
     "visibility": "public"
   },
   "peerProject": {
     "name": "sheepfold-support-server",
-    "repository": "https://github.com/kva4991/sheepfold-support-server",
+    "repository": "https://github.com/hayOfLife/sheepfold-support-server",
     "visibility": "private"
   },
   "protocol": {
     "name": "sheepfold-family-message-relay",
     "major": 1,
-    "canonicalRepository": "https://github.com/kva4991/luci-app-sheepfold-family-internet-control",
+    "canonicalRepository": "https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control",
     "canonicalPaths": [
       "docs/android-router-message-relay.ru.md",
       "tools/messageRelay/README.ru.md",
