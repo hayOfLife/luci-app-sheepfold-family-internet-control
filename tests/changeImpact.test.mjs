@@ -18,6 +18,18 @@ function fixtureConsumers(helperName) {
 }
 
 describe('change impact advisor §impact1', () => {
+  it('maps update wrappers and the installed updater to direct preservation checks', () => {
+    for (const path of ['install.sh', 'update.sh', 'uninstall.sh',
+      'package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-updater']) {
+      const report = inspectChanges([path]);
+      assert.deepEqual(report.unknown, [], path);
+      assert.equal(report.risk, 'critical', path);
+      for (const name of ['updateTransportSafety.test.mjs', 'installSettingsPreservation.test.mjs', 'installLanguage.test.mjs'])
+        assert.ok(report.directTests.includes(name), `${path}: missing ${name}`);
+    }
+    assert.deepEqual(inspectChanges(['unknownUpdater.sh']).unknown, ['unknownUpdater.sh']);
+  });
+
   it('selects time panel, action adapter and backend result checks together', () => {
     for (const file of [
       'package/luci-app-sheepfold-family-internet-control/htdocs/luci-static/resources/sheepfold/features/settings/time.js',

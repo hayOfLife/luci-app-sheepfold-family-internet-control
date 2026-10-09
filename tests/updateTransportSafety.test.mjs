@@ -1,7 +1,8 @@
 /*
  * Проверяет обновлятор с настоящим тестовым IPK и подменёнными HTTP/UCI/package manager
  * Меняет только fixture в .build/test-tmp; сеть и установленный роутер не затрагивает
- * Успех подтверждает URL/ошибки/откат модели, но не подпись выпуска или живой OpenWrt
+ * Файловые отказы проверяют сохранность снимка и атомарную публикацию настоящих файлов
+ * Успех подтверждает URL/ошибки/откат модели, но не подпись выпуска, питание или живой OpenWrt
  */
 import {
   chmodSync,
@@ -9,6 +10,10 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  rmdirSync,
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
@@ -68,6 +73,89 @@ function testIpk() {
   return cachedTestIpk;
 }
 
+function recoveryFixture(root, config, work, options) {
+  if (!options) return { env: {} };
+  const snapshot = join(work, 'sheepfold-config-before-update');
+  const snapshotState = `${snapshot}.state`;
+  const trace = join(root, 'fault.log');
+  const migration = join(root, 'migration.config');
+  const otherConfig = join(root, 'other.config');
+  const faultEnv = join(root, 'fault-env.sh');
+  const mutation = join(root, 'mutate-config.sh');
+  const notification = join(root, 'notification.sh');
+  const notificationTrace = join(root, 'notification.log');
+  writeFileSync(trace, '');
+  writeFileSync(notificationTrace, '');
+  writeFileSync(migration, 'stale migration config\n');
+  writeFileSync(otherConfig, 'unrelated config\n');
+  if (options.initialConfig === null) rmSync(config);
+  else if (options.initialConfig === 'directory') {
+    rmSync(config);
+    mkdirSync(config);
+  } else if (options.initialConfig === 'symlink') {
+    rmSync(config);
+    symlinkSync(otherConfig, config);
+  } else if (options.initialConfig !== undefined) writeFileSync(config, options.initialConfig);
+  executable(mutation, `
+#!/bin/sh
+case "$INSTALLED_SHAPE" in
+  directory) rm -f "$CONFIG_FILE"; mkdir "$CONFIG_FILE" ;;
+  symlink) rm -f "$CONFIG_FILE"; ln -s "\${OTHER_CONFIG##*/}" "$CONFIG_FILE" ;;
+  missingSnapshot) rm -f "$SNAPSHOT_FILE" ;;
+esac
+`);
+  executable(notification, '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$NOTIFICATION_TRACE"\n');
+  // BASH_ENV внедряет отказы внутрь updater, не полагаясь на перестановку PATH в MSYS
+  executable(faultEnv, `
+cp() {
+  local target arg
+  for arg in "$@"; do target="$arg"; done
+  case "$FAULT_MODE:$target" in
+    snapshotCopy:"$SNAPSHOT_FILE")
+      printf '%s\\n' "$FAULT_MODE" >> "$FAULT_TRACE"
+      printf partial > "$target"; return 29 ;;
+    snapshotMismatch:"$SNAPSHOT_FILE")
+      printf '%s\\n' "$FAULT_MODE" >> "$FAULT_TRACE"
+      printf partial > "$target"; return 0 ;;
+    restoreCopy:"$CONFIG_FILE"|restoreCopy:*/.sheepfold-update-restore.*/config)
+      printf '%s\\n' "$FAULT_MODE" >> "$FAULT_TRACE"
+      printf partial > "$target"; return 29 ;;
+  esac
+  command cp "$@"
+}
+mv() {
+  local target arg
+  for arg in "$@"; do target="$arg"; done
+  if [ "$FAULT_MODE" = restoreMove ] && [ "$target" = "$CONFIG_FILE" ]; then
+    printf '%s\\n' "$FAULT_MODE" >> "$FAULT_TRACE"; return 30
+  fi
+  command mv "$@"
+}
+cmp() {
+  local target arg
+  for arg in "$@"; do target="$arg"; done
+  if [ "$FAULT_MODE" = restoreReadback ] && [ "$target" = "$CONFIG_FILE" ]; then
+    printf '%s\\n' "$FAULT_MODE" >> "$FAULT_TRACE"; return 31
+  fi
+  command cmp "$@"
+}
+`);
+  return { snapshot, snapshotState, trace, otherConfig, notificationTrace, env: {
+    BASH_ENV: posix(relative(repoRoot, faultEnv)),
+    RECOVERY_MUTATION: posix(relative(repoRoot, mutation)),
+    INSTALLED_SHAPE: options.installedShape || '',
+    FAULT_MODE: options.fault || '',
+    FAULT_TRACE: posix(relative(repoRoot, trace)),
+    SNAPSHOT_FILE: posix(relative(repoRoot, snapshot)),
+    OTHER_CONFIG: posix(relative(repoRoot, otherConfig)),
+    TEST_LANGUAGE: options.language || 'ru',
+    NOTIFICATION_TRACE: posix(relative(repoRoot, notificationTrace)),
+    SHEEPFOLD_LOG_HELPER: posix(relative(repoRoot, notification)),
+    SHEEPFOLD_NOTIFICATION_HELPER: posix(relative(repoRoot, notification)),
+    SHEEPFOLD_UPDATE_MIGRATION_BACKUP: posix(relative(repoRoot, migration)),
+  } };
+}
+
 function runInstallScenario({
   packageSource = testIpk(),
   assetName = basename(packageSource),
@@ -80,6 +168,7 @@ function runInstallScenario({
   fetchExit = 0,
   cancelAfterDownload = false,
   lockHeld = false,
+  recovery,
 } = {}) {
   const root = mkdtempSync(join(testTmp, 'sheepfold-updater-install-'));
   const bin = join(root, 'bin');
@@ -96,6 +185,7 @@ function runInstallScenario({
   writeFileSync(betaState, beta);
   writeFileSync(fetchLog, '');
   writeFileSync(config, 'config original\n', 'utf8');
+  const recoveryData = recoveryFixture(root, config, work, recovery);
   const releasePackageUrl = packageUrl
     || `https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/releases/download/test/${assetName}`;
   writeFileSync(release, JSON.stringify({
@@ -109,7 +199,7 @@ function runInstallScenario({
 case "$*" in
   *beta_testing*) cat "$BETA_STATE" ;;
   *product_variant*) printf sheepfold ;;
-  *language*) printf ru ;;
+  *language*) printf '%s' "\${TEST_LANGUAGE:-ru}" ;;
   *) exit 1 ;;
 esac
 `);
@@ -147,6 +237,7 @@ case "$1" in
   install)
     printf 'install %s\n' "$2" >> "$OPKG_LOG"
     printf 'config changed by failed package\n' > "$CONFIG_FILE"
+    [ -z "\${RECOVERY_MUTATION:-}" ] || . "$RECOVERY_MUTATION"
     if [ "$INSTALL_EXIT" = 0 ] && [ "$CONFIRM_INSTALLED_VERSION" = 1 ]; then
       printf '%s\n' "$EXPECTED_VERSION" > "$OPKG_STATE"
     fi
@@ -165,7 +256,7 @@ esac
   const updateApiUrl = 'https://api.github.com/repos/hayOfLife/luci-app-sheepfold-family-internet-control/releases/latest';
   const args = lockHeld ? ['-c', 'exec 9>"$UPDATE_LOCK"; flock -n 9 || exit 90; bash "$TEST_UPDATER" "$TEST_COMMAND" 9>&-']
     : [posix(relative(repoRoot, updater)), command];
-  const result = spawnSync(bash, args, {
+  const runOptions = {
     cwd: repoRoot,
     env: {
       ...process.env,
@@ -194,13 +285,17 @@ esac
       SHEEPFOLD_UPDATE_MIGRATION_BACKUP: posix(relative(repoRoot, join(root, 'missing-migration'))),
       SHEEPFOLD_UPDATE_SERVICE_INIT: posix(relative(repoRoot, join(root, 'missing-service'))),
       SHEEPFOLD_UPDATE_RPCD_INIT: posix(relative(repoRoot, join(root, 'missing-rpcd'))),
+      ...recoveryData.env,
     },
     encoding: 'utf8',
-  });
-  return { config, opkgLog, fetchLog, result, runtime };
+  };
+  const result = spawnSync(bash, args, runOptions);
+  const runAgain = (nextCommand = command) => spawnSync(bash, [posix(relative(repoRoot, updater)), nextCommand], runOptions);
+  return { config, opkgLog, fetchLog, result, runtime, work, runAgain, ...recoveryData };
 }
 
-function runApkInstallScenario({ metadataName = 'luci-app-sheepfold-family-internet-control' } = {}) {
+function runApkInstallScenario({ metadataName = 'luci-app-sheepfold-family-internet-control',
+  installExit = 0, confirmInstalledVersion = true, recovery, beta = '0' } = {}) {
   const root = mkdtempSync(join(testTmp, 'sheepfold-updater-apk-'));
   const bin = join(root, 'bin');
   const runtime = join(root, 'runtime');
@@ -217,6 +312,7 @@ function runApkInstallScenario({ metadataName = 'luci-app-sheepfold-family-inter
   const routerUrl = `https://github.com/hayOfLife/luci-app-sheepfold-family-internet-control/releases/download/test/${routerAsset}`;
   mkdirSync(bin, { recursive: true });
   writeFileSync(config, 'config original\n', 'utf8');
+  const recoveryData = recoveryFixture(root, config, work, recovery);
   writeFileSync(packageSource, 'fake OpenWrt apk container\n', 'utf8');
   writeFileSync(release, JSON.stringify({
     tag_name: 'test',
@@ -229,8 +325,9 @@ function runApkInstallScenario({ metadataName = 'luci-app-sheepfold-family-inter
   executable(join(bin, 'uci'), `
 #!/bin/sh
 case "$*" in
+  *beta_testing*) printf '%s' "$TEST_BETA" ;;
   *product_variant*) printf sheepfold ;;
-  *language*) printf ru ;;
+  *language*) printf '%s' "\${TEST_LANGUAGE:-ru}" ;;
   *) exit 1 ;;
 esac
 `);
@@ -268,7 +365,11 @@ case "$1" in
   adbdump) printf '{"info":{"name":"%s","version":"%s","arch":"noarch"}}\n' "$APK_META_NAME" "$EXPECTED_VERSION" ;;
   add)
     printf 'config changed by apk package\n' > "$CONFIG_FILE"
-    printf '%s\n' "$EXPECTED_VERSION" > "$APK_STATE"
+    [ -z "\${RECOVERY_MUTATION:-}" ] || . "$RECOVERY_MUTATION"
+    if [ "$INSTALL_EXIT" = 0 ] && [ "$CONFIRM_INSTALLED_VERSION" = 1 ]; then
+      printf '%s\n' "$EXPECTED_VERSION" > "$APK_STATE"
+    fi
+    exit "$INSTALL_EXIT"
     ;;
   *) exit 2 ;;
 esac
@@ -296,7 +397,7 @@ json_get_var() {
     ? 'C:\\Program Files\\Git\\bin\\bash.exe'
     : 'bash';
   const updateApiUrl = 'https://api.github.com/repos/hayOfLife/luci-app-sheepfold-family-internet-control/releases/latest';
-  const result = spawnSync(bash, [posix(relative(repoRoot, updater)), 'install'], {
+  const runOptions = {
     cwd: repoRoot,
     env: {
       ...process.env,
@@ -312,6 +413,8 @@ json_get_var() {
       EXPECTED_VERSION: expectedVersion,
       FETCH_LOG: posix(relative(repoRoot, fetchLog)),
       CONFIG_FILE: posix(relative(repoRoot, config)),
+      INSTALL_EXIT: String(installExit),
+      CONFIRM_INSTALLED_VERSION: confirmInstalledVersion ? '1' : '0', TEST_BETA: beta,
       SHEEPFOLD_UPDATE_RUNTIME_DIR: posix(relative(repoRoot, runtime)),
       SHEEPFOLD_UPDATE_WORK_DIR: posix(relative(repoRoot, work)),
       SHEEPFOLD_UPDATE_CONFIG_FILE: posix(relative(repoRoot, config)),
@@ -319,10 +422,13 @@ json_get_var() {
       SHEEPFOLD_UPDATE_SERVICE_INIT: posix(relative(repoRoot, join(root, 'missing-service'))),
       SHEEPFOLD_UPDATE_RPCD_INIT: posix(relative(repoRoot, join(root, 'missing-rpcd'))),
       SHEEPFOLD_UPDATE_JSHN_LIBRARY: posix(relative(repoRoot, jshn)),
+      ...recoveryData.env,
     },
     encoding: 'utf8',
-  });
-  return { apkLog, config, fetchLog, result, routerUrl };
+  };
+  const runAgain = (command = 'install') => spawnSync(bash, [posix(relative(repoRoot, updater)), command], runOptions);
+  const result = runAgain();
+  return { apkLog, config, fetchLog, result, routerUrl, work, runAgain, ...recoveryData };
 }
 
 describe('network transport safety', () => {
@@ -595,5 +701,175 @@ describe('network transport safety', () => {
     assert.match(result.stderr, /имя пакета не совпадает/);
     assert.equal(readFileSync(config, 'utf8'), 'config original\n');
     assert.doesNotMatch(readFileSync(apkLog, 'utf8'), /^add /m);
+  });
+
+  for (const [format, scenario, changedConfig] of [
+    ['ipk', runInstallScenario, 'config changed by failed package\n'],
+    ['apk', runApkInstallScenario, 'config changed by apk package\n'],
+  ]) {
+    for (const fault of ['restoreCopy', 'restoreMove', 'restoreReadback']) {
+      it(`${format} retains recovery after ${fault} and refuses a second manual or beta install`, () => {
+        const run = scenario({ installExit: 23, beta: '1', recovery: { fault } });
+        assert.equal(run.result.status, 23, run.result.stderr);
+        assert.doesNotMatch(run.result.stdout, /Предыдущие настройки Sheepfold восстановлены/);
+        assert.match(run.result.stderr, /Не удалось автоматически восстановить/);
+        assert.ok(run.result.stderr.includes(posix(relative(repoRoot, run.snapshot))), run.result.stderr);
+        assert.equal(readFileSync(run.snapshot, 'utf8'), 'config original\n');
+        assert.equal(readFileSync(run.snapshotState, 'utf8'), 'present\n');
+        assert.match(readFileSync(run.trace, 'utf8'), new RegExp(fault));
+        assert.equal(readFileSync(run.config, 'utf8'), fault === 'restoreReadback' ? 'config original\n' : changedConfig);
+        const fetches = readFileSync(run.fetchLog, 'utf8');
+        const packageLog = run.opkgLog || run.apkLog;
+        const installs = (log) => log.split('\n').filter((line) => /^(install|add) /.test(line));
+        const calls = installs(readFileSync(packageLog, 'utf8'));
+        for (const command of ['install', 'install-beta-foreground']) {
+          const retry = run.runAgain(command);
+          assert.equal(retry.status, 1, retry.stderr);
+          assert.match(retry.stderr, /Сначала восстановите настройки/);
+          assert.equal(readFileSync(run.fetchLog, 'utf8'), fetches);
+          assert.deepEqual(installs(readFileSync(packageLog, 'utf8')), calls);
+          assert.equal(readFileSync(run.snapshot, 'utf8'), 'config original\n');
+        }
+      });
+    }
+
+    for (const installedShape of ['directory', 'missingSnapshot', 'symlink']) {
+      it(`${format} rejects ${installedShape} instead of claiming configuration recovery`,
+        { skip: installedShape === 'symlink' && process.platform === 'win32' }, () => {
+          const run = scenario({ installExit: 23, recovery: { installedShape } });
+          assert.equal(run.result.status, 23, run.result.stderr);
+          assert.doesNotMatch(run.result.stdout, /Предыдущие настройки Sheepfold восстановлены/);
+          assert.match(run.result.stderr, /Не удалось автоматически восстановить/);
+          assert.equal(readFileSync(run.snapshotState, 'utf8'), 'present\n');
+          if (installedShape === 'directory') assert.ok(statSync(run.config).isDirectory());
+          if (installedShape === 'missingSnapshot') assert.equal(readFileSync(run.config, 'utf8'), changedConfig);
+          else assert.equal(readFileSync(run.snapshot, 'utf8'), 'config original\n');
+          assert.equal(readFileSync(run.otherConfig, 'utf8'), 'unrelated config\n');
+        });
+    }
+
+    for (const initialConfig of ['', null]) {
+      it(`${format} restores an initially ${initialConfig === null ? 'absent' : 'empty'} config without stale migration data`, () => {
+        const run = scenario({ installExit: 23, recovery: { initialConfig } });
+        assert.equal(run.result.status, 23, run.result.stderr);
+        assert.match(run.result.stdout, /Предыдущие настройки Sheepfold восстановлены/);
+        if (initialConfig === null) assert.equal(existsSync(run.config), false);
+        else assert.equal(readFileSync(run.config, 'utf8'), '');
+        assert.equal(existsSync(run.snapshot), false);
+        assert.equal(existsSync(run.snapshotState), false);
+      });
+    }
+
+    for (const initialConfig of ['directory', 'symlink']) {
+      it(`${format} refuses an initial ${initialConfig} before installing`,
+        { skip: initialConfig === 'symlink' && process.platform === 'win32' }, () => {
+          const run = scenario({ installExit: 23, recovery: { initialConfig } });
+          assert.equal(run.result.status, 1, run.result.stderr);
+          assert.match(run.result.stderr, /установка не запущена/);
+          if (run.opkgLog) assert.equal(existsSync(run.opkgLog), false);
+          else assert.doesNotMatch(readFileSync(run.apkLog, 'utf8'), /^add /m);
+          assert.equal(readFileSync(run.otherConfig, 'utf8'), 'unrelated config\n');
+        });
+    }
+
+    for (const fault of ['snapshotCopy', 'snapshotMismatch']) {
+      it(`${format} does not install without a byte-exact snapshot after ${fault}`, () => {
+        const run = scenario({ installExit: 23, recovery: { fault } });
+        assert.equal(run.result.status, 1, run.result.stderr);
+        assert.match(run.result.stderr, /установка не запущена/);
+        assert.match(readFileSync(run.trace, 'utf8'), new RegExp(fault));
+        assert.equal(readFileSync(run.config, 'utf8'), 'config original\n');
+        if (run.opkgLog) assert.equal(existsSync(run.opkgLog), false);
+        else assert.doesNotMatch(readFileSync(run.apkLog, 'utf8'), /^add /m);
+      });
+    }
+
+    it(`${format} retains recovery when a successful install has an unconfirmed version`, () => {
+      const run = scenario({ installExit: 0, confirmInstalledVersion: false, recovery: { fault: 'restoreMove' } });
+      assert.equal(run.result.status, 1, run.result.stderr);
+      assert.match(run.result.stderr, /вместо ожидаемой/);
+      assert.doesNotMatch(run.result.stdout, /Предыдущие настройки Sheepfold восстановлены/);
+      assert.equal(readFileSync(run.snapshot, 'utf8'), 'config original\n');
+      assert.equal(readFileSync(run.snapshotState, 'utf8'), 'present\n');
+    });
+
+    it(`${format} cleans snapshots only after confirmed install or successful recovery`, () => {
+      for (const installExit of [0, 23]) {
+        const run = scenario({ installExit, confirmInstalledVersion: true, recovery: {} });
+        assert.equal(run.result.status, installExit, run.result.stderr);
+        assert.equal(existsSync(run.snapshot), false);
+        assert.equal(existsSync(run.snapshotState), false);
+      }
+    });
+
+    it(`${format} retains a state-only recovery guard after a missing snapshot`, () => {
+      const run = scenario({ installExit: 23, recovery: { installedShape: 'missingSnapshot' } });
+      assert.equal(run.result.status, 23, run.result.stderr);
+      assert.equal(existsSync(run.snapshot), false);
+      const fetches = readFileSync(run.fetchLog, 'utf8');
+      const retry = run.runAgain();
+      assert.equal(retry.status, 1, retry.stderr);
+      assert.equal(readFileSync(run.fetchLog, 'utf8'), fetches);
+      assert.equal(readFileSync(run.snapshotState, 'utf8'), 'present\n');
+      assert.equal(readFileSync(run.config, 'utf8'), changedConfig);
+    });
+  }
+
+  for (const initialConfig of ['config original\n', '', null]) {
+    it(`documentedManualRecoveryRetainsThe${initialConfig === null ? 'Absent' : initialConfig === '' ? 'Empty' : 'Present'}Snapshot`, () => {
+      const run = runInstallScenario({ installExit: 23, recovery: { initialConfig,
+        fault: 'restoreCopy', installedShape: initialConfig === null ? 'directory' : '' } });
+      assert.equal(run.result.status, 23, run.result.stderr);
+      if (initialConfig === null) {
+        rmdirSync(run.config);
+        writeFileSync(run.config, 'unexpected config\n');
+      }
+      const guide = readFileSync(join(repoRoot, 'docs/update-safety.ru.md'), 'utf8');
+      const script = guide.match(/```sh\r?\n(\(\r?\n[\s\S]*?)\r?\n```/)[1]
+        .replaceAll('/etc/config/sheepfold', posix(relative(repoRoot, run.config)))
+        .replaceAll('/etc/config', posix(relative(repoRoot, dirname(run.config))))
+        .replaceAll('/tmp/sheepfold/update/sheepfold-config-before-update', posix(relative(repoRoot, run.snapshot)));
+      const restored = spawnSync('bash', ['-s'], {
+        cwd: repoRoot, env: { ...process.env, BASH_ENV: '' }, input: script, encoding: 'utf8', timeout: 10000,
+      });
+      assert.equal(restored.status, 0, restored.error?.message || restored.stderr);
+      assert.match(restored.stdout, /original snapshot retained/);
+      if (initialConfig === null) assert.equal(existsSync(run.config), false);
+      else {
+        assert.equal(readFileSync(run.config, 'utf8'), initialConfig);
+        assert.equal(readFileSync(run.snapshot, 'utf8'), initialConfig);
+      }
+      assert.equal(readFileSync(run.snapshotState, 'utf8'), initialConfig === null ? 'absent\n' : 'present\n');
+    });
+  }
+
+  it('englishRecoveryErrorsKeepTheOriginalPackageExitCodeAndSnapshot', () => {
+    const run = runInstallScenario({ installExit: 23, recovery: { fault: 'restoreCopy', language: 'en' } });
+    assert.equal(run.result.status, 23, run.result.stderr);
+    assert.match(run.result.stderr, /Could not automatically restore/);
+    assert.match(run.result.stderr, /Further installations are blocked/);
+    assert.equal(readFileSync(run.snapshot, 'utf8'), 'config original\n');
+    const retry = run.runAgain();
+    assert.equal(retry.status, 1, retry.stderr);
+    assert.match(retry.stderr, /Restore Sheepfold settings/);
+  });
+
+  it('betaRecoveryNotificationReportsAPauseInsteadOfPromisingAnInstallInAnHour', async () => {
+    const run = runInstallScenario({ command: 'start-beta', beta: '1', installExit: 23,
+      recovery: { fault: 'restoreCopy' } });
+    assert.equal(run.result.status, 0, run.result.stderr);
+    const statusFile = join(run.runtime, 'update.status');
+    const pidFile = join(run.runtime, 'update.pid');
+    for (let attempt = 0; attempt < 200; attempt++) {
+      if (existsSync(statusFile) && readFileSync(statusFile, 'utf8').trim() !== 'running' && !existsSync(pidFile)) break;
+      await delay(100);
+    }
+    assert.equal(readFileSync(statusFile, 'utf8').trim(), 'failed:23');
+    assert.equal(existsSync(pidFile), false);
+    assert.equal(readFileSync(run.snapshot, 'utf8'), 'config original\n');
+    const notification = readFileSync(run.notificationTrace, 'utf8');
+    assert.match(notification, /enqueue update beta-update-failed:\d{4}-\d{2}-\d{2}/);
+    assert.match(notification, /автообновление приостановлено/);
+    assert.doesNotMatch(notification, /Повтор через час/);
   });
 });

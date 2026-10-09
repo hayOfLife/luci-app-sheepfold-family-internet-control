@@ -41,6 +41,10 @@ After the OpenWrt package is installed, the update script delegates to the insta
 
 Optional **Participate in beta testing** at the bottom of General settings enables hourly automatic updates from those published releases after confirmation and Save. It also enables SIM/new child Wi-Fi notifications, without enabling new location collection. It is off by default. See the [beta-testing contract](docs/maintenance-jobs.ru.md).
 
+If settings cannot be recovered after an installation failure, further updates stop
+and the available recovery copy is retained. Check the update log before rebooting:
+the default copy is in RAM. See the [recovery guide](docs/update-safety.ru.md#восстановление-после-файлового-отказа).
+
 ```sh
 wget -O /tmp/sheepfold-update.sh https://raw.githubusercontent.com/hayOfLife/luci-app-sheepfold-family-internet-control/main/update.sh &&
 sh /tmp/sheepfold-update.sh

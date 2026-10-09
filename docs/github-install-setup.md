@@ -99,8 +99,11 @@ sh /tmp/sheepfold-update.sh
 
 The installed updater compares package-manager versions, validates the trusted
 GitHub asset path and internal metadata, saves the UCI configuration before the
-package-manager transaction, and restores the configuration after a failed
-install. This is configuration recovery, not a binary firmware rollback.
+package-manager transaction, and attempts verified atomic configuration recovery
+after a failed install. A failed recovery retains its available snapshot/state and
+blocks another install until an operator resolves them. The default snapshot lives
+in RAM and does not survive reboot. This is configuration recovery, not a binary
+firmware rollback; see the [recovery procedure](update-safety.ru.md#восстановление-после-файлового-отказа).
 
 The optional `beta_testing=1` General setting authorizes hourly background updates
 from the same published stable releases, with no same-version reinstall or edition

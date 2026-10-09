@@ -385,12 +385,13 @@ export const impactRules = Object.freeze([
   Object.freeze({
     id: 'packaging',
     area: 'Пакет, release и updater',
-    pattern: /(?:^package\/[^/]+\/Makefile$|^scripts\/(?:build-test-ipk|sheepfold_variants|prepare-openwrt|collect-openwrt|create-openwrt-release)|(?:^|\/)sheepfold-updater$|^install\.sh$|^uninstall\.sh$|^\.github\/workflows\/build-openwrt-packages\.yml$)/,
+    pattern: /(?:^package\/[^/]+\/Makefile$|^scripts\/(?:build-test-ipk|sheepfold_variants|prepare-openwrt|collect-openwrt|create-openwrt-release)|(?:^|\/)sheepfold-updater$|^(?:install|update|uninstall)\.sh$|^\.github\/workflows\/build-openwrt-packages\.yml$)/,
     excludeKinds: ['packageReleaseOnly'],
     categories: ['packaging', 'tooling', 'security'],
     checks: ['githubPackages'],
     risk: 'critical',
-    review: 'Проверить Standard/AI, IPK/OpenWrt APK, package identity, upgrade и сохранение UCI.',
+    directTests: Object.freeze(['updateTransportSafety.test.mjs', 'installSettingsPreservation.test.mjs', 'installLanguage.test.mjs']),
+    review: 'Проверить Standard/AI, IPK/OpenWrt APK, package identity, upgrade, сохранение UCI и аварийных снимков при отказе восстановления.',
     full: true,
   }),
   Object.freeze({

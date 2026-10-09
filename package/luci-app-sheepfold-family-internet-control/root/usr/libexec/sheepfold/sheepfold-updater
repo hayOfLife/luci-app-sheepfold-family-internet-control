@@ -46,7 +46,6 @@ UPDATE_LOCK="${RUNTIME_DIR}/update.flock"
 NOTIFIER="${SHEEPFOLD_NOTIFICATION_HELPER:-${SCRIPT_DIR}/sheepfold-admin-notification}"
 EVENT_LOG="${SHEEPFOLD_LOG_HELPER:-${SCRIPT_DIR}/sheepfold-log}"
 CONFIG_FILE="${SHEEPFOLD_UPDATE_CONFIG_FILE:-/etc/config/sheepfold}"
-MIGRATION_CONFIG_BACKUP="${SHEEPFOLD_UPDATE_MIGRATION_BACKUP:-/etc/sheepfold/migrations/sheepfold.config.pre-upgrade}"
 CONFIG_BACKUP="${WORK_DIR}/sheepfold-config-before-update"
 CONFIG_BACKUP_STATE="${WORK_DIR}/sheepfold-config-before-update.state"
 SHEEPFOLD_INIT="${SHEEPFOLD_UPDATE_SERVICE_INIT:-/etc/init.d/sheepfold}"
@@ -95,6 +94,7 @@ text() {
                         config_backup_failed) printf '%s' "Не удалось создать резервную копию настроек; установка не запущена." ;;
                         config_restored) printf '%s' "Предыдущие настройки Sheepfold восстановлены." ;;
                         config_restore_failed) printf '%s' "Не удалось автоматически восстановить предыдущие настройки Sheepfold." ;;
+                        config_recovery_required) printf 'Сначала восстановите настройки Sheepfold и разберите сохранённый снимок. Повторная установка заблокирована. Снимок: %s; состояние: %s.' "$1" "$2" ;;
                         installed_version_mismatch) printf 'После установки роутер сообщает версию %s вместо ожидаемой %s.' "$1" "$2" ;;
                         reloading_service) printf '%s' "Перезапуск сервиса Sheepfold..." ;;
                         update_completed) printf '%s' "Обновление завершено." ;;
@@ -131,6 +131,7 @@ text() {
                 config_backup_failed) printf '%s' "Could not back up settings; installation was not started." ;;
                 config_restored) printf '%s' "Previous Sheepfold settings were restored." ;;
                 config_restore_failed) printf '%s' "Could not automatically restore previous Sheepfold settings." ;;
+                config_recovery_required) printf 'Restore Sheepfold settings and resolve the retained snapshot before installing again. Further installations are blocked. Snapshot: %s; state: %s.' "$1" "$2" ;;
                 installed_version_mismatch) printf 'Router reports version %s after installation, expected %s.' "$1" "$2" ;;
                 reloading_service) printf '%s' "Reloading Sheepfold service..." ;;
                 update_completed) printf '%s' "Update completed." ;;
@@ -475,38 +476,76 @@ validate_package() {
 }
 
 backup_config() {
-        rm -f "$CONFIG_BACKUP" "$CONFIG_BACKUP_STATE"
         umask 077
-        if [ -r "$CONFIG_FILE" ]; then
+        [ ! -L "$CONFIG_FILE" ] || return 1
+        if [ -e "$CONFIG_FILE" ]; then
+                [ -f "$CONFIG_FILE" ] && [ -r "$CONFIG_FILE" ] || return 1
                 cp "$CONFIG_FILE" "$CONFIG_BACKUP" || return 1
+                cmp -s "$CONFIG_FILE" "$CONFIG_BACKUP" || return 1
+                chmod 600 "$CONFIG_BACKUP" || return 1
                 printf 'present\n' > "$CONFIG_BACKUP_STATE" || return 1
         else
                 printf 'absent\n' > "$CONFIG_BACKUP_STATE" || return 1
         fi
-        chmod 600 "$CONFIG_BACKUP" "$CONFIG_BACKUP_STATE" 2>/dev/null || true
+        chmod 600 "$CONFIG_BACKUP_STATE" || return 1
 }
 
 restore_config() {
-        [ -r "$CONFIG_BACKUP_STATE" ] || return 1
+        local config_parent restore_state staged result
+        [ ! -L "$CONFIG_BACKUP_STATE" ] && [ -f "$CONFIG_BACKUP_STATE" ] && [ -r "$CONFIG_BACKUP_STATE" ] || return 1
+        [ ! -L "$CONFIG_FILE" ] || return 1
+        [ ! -e "$CONFIG_FILE" ] || [ -f "$CONFIG_FILE" ] || return 1
+        restore_state="$(cat "$CONFIG_BACKUP_STATE")" || return 1
         config_parent="${CONFIG_FILE%/*}"
         [ "$config_parent" != "$CONFIG_FILE" ] || config_parent=.
-        mkdir -p "$config_parent"
-        case "$(sed -n '1p' "$CONFIG_BACKUP_STATE")" in
+        case "$restore_state" in
                 present)
-                        restore_source="$CONFIG_BACKUP"
-                        [ -s "$restore_source" ] || restore_source="$MIGRATION_CONFIG_BACKUP"
-                        [ -s "$restore_source" ] || return 1
-                        cp "$restore_source" "$CONFIG_FILE" || return 1
-                        chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+                        # Пустой снимок допустим, чужая миграционная копия не доказывает прежнее состояние
+                        [ ! -L "$CONFIG_BACKUP" ] && [ -f "$CONFIG_BACKUP" ] && [ -r "$CONFIG_BACKUP" ] || return 1
+                        [ -d "$config_parent" ] && [ ! -L "$config_parent" ] || return 1
+                        staged="$(mktemp -d "$config_parent/.sheepfold-update-restore.XXXXXX")" || return 1
+                        result=1
+                        # Частичный cp не должен портить рабочий файл, mv -T не копирует внутрь каталога
+                        if chmod 700 "$staged" &&
+                           cp "$CONFIG_BACKUP" "$staged/config" &&
+                           chmod 600 "$staged/config" &&
+                           cmp -s "$CONFIG_BACKUP" "$staged/config" &&
+                           [ ! -L "$CONFIG_FILE" ] && { [ ! -e "$CONFIG_FILE" ] || [ -f "$CONFIG_FILE" ]; } &&
+                           mv -fT "$staged/config" "$CONFIG_FILE" &&
+                           [ ! -L "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ] &&
+                           cmp -s "$CONFIG_BACKUP" "$CONFIG_FILE"; then
+                                result=0
+                        fi
+                        rm -f "$staged/config" 2>/dev/null || true
+                        rmdir "$staged" 2>/dev/null || printf 'Sheepfold recovery temporary directory remains: %s\n' "$staged" >&2
+                        return "$result"
                         ;;
-                absent) rm -f "$CONFIG_FILE" || return 1 ;;
+                absent)
+                        rm -f "$CONFIG_FILE" || return 1
+                        [ ! -e "$CONFIG_FILE" ] && [ ! -L "$CONFIG_FILE" ] || return 1
+                        ;;
                 *) return 1 ;;
         esac
         return 0
 }
 
 cleanup_install_files() {
-        rm -f "$PACKAGE_FILE" "$CONFIG_BACKUP" "$CONFIG_BACKUP_STATE" "$WORK_DIR"/validate-*.$$ 2>/dev/null || true
+        rm -f "$PACKAGE_FILE" "$WORK_DIR"/validate-*.$$ 2>/dev/null || true
+}
+
+cleanup_config_backup() {
+        rm -f "$CONFIG_BACKUP" "$CONFIG_BACKUP_STATE" 2>/dev/null || true
+}
+
+recover_config() {
+        if restore_config; then
+                cleanup_config_backup
+                say config_restored
+        else
+                update_outcome=recovery_required
+                say config_restore_failed >&2
+                say config_recovery_required "$CONFIG_BACKUP" "$CONFIG_BACKUP_STATE" >&2
+        fi
 }
 
 version_is_newer() {
@@ -605,6 +644,13 @@ install_update() {
                 # Нельзя угадывать версию установленного пакета при безнадзорном обновлении
                 [ -n "$(current_version || true)" ] || return 1
         fi
+        # Даже оборванная операция могла уже изменить конфиг, её снимок нельзя перезаписывать
+        if [ -e "$CONFIG_BACKUP" ] || [ -L "$CONFIG_BACKUP" ] ||
+           [ -e "$CONFIG_BACKUP_STATE" ] || [ -L "$CONFIG_BACKUP_STATE" ]; then
+                update_outcome=recovery_required
+                say config_recovery_required "$CONFIG_BACKUP" "$CONFIG_BACKUP_STATE" >&2
+                return 1
+        fi
         say updater_title
         read_release_info || return $?
         CURRENT_VERSION="$(current_version || true)"
@@ -642,12 +688,14 @@ install_update() {
         if ! backup_config; then
                 say config_backup_failed >&2
                 cleanup_install_files
+                cleanup_config_backup
                 return 1
         fi
 
         # Отключение участия во время загрузки отменяет ещё не начатую установку
         if [ "$update_mode" = beta ] && ! beta_enabled; then
                 cleanup_install_files
+                cleanup_config_backup
                 update_outcome=cancelled
                 return 4
         fi
@@ -660,11 +708,7 @@ install_update() {
         fi
         if [ "$install_code" -ne 0 ]; then
                 say install_failed "$install_code" >&2
-                if restore_config; then
-                        say config_restored
-                else
-                        say config_restore_failed >&2
-                fi
+                recover_config
                 cleanup_install_files
                 return "$install_code"
         fi
@@ -672,16 +716,13 @@ install_update() {
         INSTALLED_VERSION="$(current_version || true)"
         if [ "$INSTALLED_VERSION" != "$LATEST_VERSION" ]; then
                 say installed_version_mismatch "${INSTALLED_VERSION:-unknown}" "$LATEST_VERSION" >&2
-                if restore_config; then
-                        say config_restored
-                else
-                        say config_restore_failed >&2
-                fi
+                recover_config
                 cleanup_install_files
                 return 1
         fi
 
         cleanup_install_files
+        cleanup_config_backup
 
         say reloading_service
         [ -x "$SHEEPFOLD_INIT" ] && "$SHEEPFOLD_INIT" restart 9>&- || true
@@ -748,7 +789,13 @@ beta_result() {
                 fi
         else
                 result_key="beta-update-failed:$(date +%F)"
-                if [ "$LANGUAGE" = ru ]; then
+                if [ "$update_outcome" = recovery_required ]; then
+                        if [ "$LANGUAGE" = ru ]; then
+                                message="Бета-тест: автообновление приостановлено. Требуется восстановить настройки Sheepfold. Подробности в журнале обновления на роутере."
+                        else
+                                message="Beta testing: automatic updates are paused until Sheepfold settings are recovered. See the router update log for details."
+                        fi
+                elif [ "$LANGUAGE" = ru ]; then
                         message="Бета-тест: не удалось обновить Sheepfold. Повтор через час. Подробности в журнале обновления на роутере."
                 else
                         message="Beta testing: Sheepfold update failed. Retrying in one hour. See the router update log for details."

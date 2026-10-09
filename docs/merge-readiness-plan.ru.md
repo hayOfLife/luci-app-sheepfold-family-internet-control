@@ -62,6 +62,46 @@ android\gradlew.bat -p android :app:testDebugUnitTest --tests app.sheepfold.andr
 APK/SDK-сборки и разовый переход установленных старых клиентов, живой OpenWrt,
 сверка private peer/vendor. Локальные результаты не заменяют эти проверки.
 
+### Продолжение 10 октября: сохранение снимка при отказе восстановления
+
+База `277faf0`, [B163–B165](bug-register.ru.md): побайтовая проверка снимка,
+атомарное восстановление через соседний временный файл, сохранение снимка/состояния
+и запрет следующей установки при отказе восстановления. Удалён fallback на чужую
+миграционную копию. `update.sh` теперь известен карте влияния; строгая проверка
+неизвестных путей сохранена. Исправлено только описание приоритета «Без ограничений»
+для интернета, не сам policy. Публикация исходников не означает выпуск или установку пакета.
+
+Свежие проверки в Windows: полный прогон updater до добавления двух последних
+сценариев — 45 успешно, 5 пропущено; затем 5 профильных проверок успешно
+(английская ошибка, beta-уведомление и повтор трёх сценариев инструкции восстановления).
+53 проверки карты, quality-контрактов, установщика и документационных операций проходят.
+Пропуски updater: native `flock` и четыре сценария Unix-симлинков; это не подтверждение
+работы симлинков на OpenWrt. ESLint, shell syntax и структурный аудит 299 документов
+проходят. Полный продуктовый gate и незатронутые Android/firewall/AI тесты не запускались.
+
+Повторяемые команды из корня `C:\Users\User\Documents\pesochnica\sheepfold-r297-review`,
+PowerShell с Node, Python и Git Bash; зависимости и [процессное Git-исключение](agent-environment.ru.md#git-отказывает-из-за-владельца-checkout)
+подготовлены заранее:
+
+```powershell
+node --test tests/updateTransportSafety.test.mjs
+node --test tests/changeImpact.test.mjs tests/qualityAssistants.test.mjs tests/installSettingsPreservation.test.mjs tests/installLanguage.test.mjs tests/documentationOperations.test.mjs
+npm.cmd run lint:js
+npm.cmd run quality:docs:all
+& 'C:\Program Files\Git\bin\bash.exe' -n package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-updater
+git diff --check
+```
+
+Ожидаются exit 0, `fail 0`, только перечисленные платформенные пропуски и отсутствие
+ошибок аудита/синтаксиса. Fixture меняет только временные файлы/build; не запускать
+сам updater на ПК. Настоящий APK v3, BusyBox и аппаратный обрыв питания этими
+моделями не проверены. Карта консервативно требует полный gate для installer/security;
+по согласованному объёму выполнены прямые регрессии, а не тесты соседних подсистем.
+Структурный advisor оставляет предупреждения: transport-тест вырос до 875 строк,
+карта правил — до 544 строк. Они не скрыты; отдельный рефакторинг стенда/карты
+в это исправление не включён.
+Поддерживаемая процедура восстановления и ограничения RAM — в [безопасности обновления](update-safety.ru.md).
+
 ## Контрольная точка 9 сентября 2026 года: исправления r295
 
 База `e1084e1`, изменения B50–B53. [Отчёт r295](audit-fixes-r295.ru.md) фиксирует
