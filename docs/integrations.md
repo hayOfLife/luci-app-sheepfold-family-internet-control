@@ -124,7 +124,13 @@ Settings -> Integrations currently shows only a disabled preview for future temp
 
 The planned function is a narrowly scoped, owner-initiated outgoing support channel, not general remote router management. A production relay needs a stable public IPv4; the home router does not. Enabling remote support must never automatically select `Disable IPv6 on the router`. That existing automatic setting remains exclusively tied to current Podkop compatibility.
 
-The complete use case and phases are in [`remote-support-access-plan.ru.md`](remote-support-access-plan.ru.md); the dedicated threat model and draft `v1` contract are in [`remote-support-threat-model.ru.md`](remote-support-threat-model.ru.md) and [`remote-support-protocol.ru.md`](remote-support-protocol.ru.md), alongside ADR-0022 (§rsup001). A random per-session port may isolate an internal bastion route, but it is not a secret and is never encoded in the spoken code. Do not replace the disabled controls until the router backend and support server expose a versioned fail-closed status/revoke contract.
+The current design is outbound HTTPS with Ed25519-signed typed operations and operator mTLS/TOTP.
+ADR-0031 replaces the FRP/SSH part of ADR-0022; port numbers are not secrets or part of the spoken
+code. The installable OpenWrt client was deferred by the owner on 2026-10-23. Public schemas and
+the Node loopback peer bench are not that client and do not activate the disabled controls.
+See [`remote-support-access-plan.ru.md`](remote-support-access-plan.ru.md),
+[`remote-support-threat-model.ru.md`](remote-support-threat-model.ru.md) and
+[`remote-support-protocol.ru.md`](remote-support-protocol.ru.md) (§rsup001).
 
 ## AdGuard Home
 

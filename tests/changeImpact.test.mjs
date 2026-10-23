@@ -99,11 +99,14 @@ describe('change impact advisor §impact1', () => {
     }
     assert.deepEqual(report.unknown, []);
   });
-  it('requires security and full verification for the experimental support credential profile', () => {
-    const report = inspectChanges(['tools/remoteSupport/transportClient.mjs']);
-    assert.deepEqual(report.unknown, []);
-    assert.ok(report.categories.includes('security')); assert.ok(report.categories.includes('tooling'));
-    assert.equal(report.fullTest, true); assert.equal(report.risk, 'critical');
+  it('requires security and full verification for current and historical support contracts', () => {
+    for (const path of ['tools/remoteSupport/transportClient.mjs', 'tools/remoteSupport/typedPayload.mjs',
+      'tools/remoteSupport/schemas/typed-router-message-v1.schema.json', 'tests/remoteSupportTypedProtocol.test.mjs']) {
+      const report = inspectChanges([path]);
+      assert.deepEqual(report.unknown, [], path);
+      assert.ok(report.categories.includes('security')); assert.ok(report.categories.includes('tooling'));
+      assert.equal(report.fullTest, true); assert.equal(report.risk, 'critical');
+    }
   });
   it('requires a separate native gate for the SFMR1 helper and executable wire model', () => {
     const report = inspectChanges([

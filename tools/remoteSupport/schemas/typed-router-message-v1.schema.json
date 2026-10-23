@@ -1,0 +1,353 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sheepfold.example/schemas/remote-support/typed-router-message-v1.schema.json",
+  "title": "Sheepfold typed HTTPS: router messages",
+  "description": "Current source-only typed HTTPS profile. Not an installable OpenWrt client or deployment permission. Runtime must verify canonical IDs, signatures, stream/sequence, deadlines, operation consent and byte limits.",
+  "allOf": [
+    {
+      "$ref": "signed-payload-v1.schema.json"
+    },
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "messageType": {
+              "const": "enrollProof"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "challenge",
+                "clientNonce"
+              ],
+              "properties": {
+                "challenge": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{43}$"
+                },
+                "clientNonce": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                }
+              }
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "capabilityReport"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "profile",
+                "capabilities"
+              ],
+              "properties": {
+                "profile": {
+                  "const": "sheepfold-support-control-1"
+                },
+                "capabilities": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "maxItems": 6,
+                  "items": {
+                    "enum": [
+                      "claimV1",
+                      "localRevokeV1",
+                      "typedControlRelayV1",
+                      "diagnosticRecipesV1",
+                      "localApprovalV1",
+                      "restartResumeV1"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "claimOpen"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sessionId",
+                "code",
+                "claimExpiresAt",
+                "diagnosticsAllowed"
+              ],
+              "properties": {
+                "sessionId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                },
+                "code": {
+                  "type": "string",
+                  "pattern": "^[0-9]{12}$"
+                },
+                "claimExpiresAt": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "diagnosticsAllowed": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "sessionReady"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sessionId",
+                "leaseId",
+                "bootId"
+              ],
+              "properties": {
+                "sessionId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                },
+                "leaseId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                },
+                "bootId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                }
+              }
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "heartbeat"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sessionId",
+                "leaseId",
+                "bootId"
+              ],
+              "properties": {
+                "sessionId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                },
+                "leaseId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                },
+                "bootId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                }
+              }
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "sessionResume"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sessionId",
+                "bootId"
+              ],
+              "properties": {
+                "sessionId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                },
+                "bootId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                }
+              }
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "commandPoll"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sessionId",
+                "leaseId",
+                "bootId"
+              ],
+              "properties": {
+                "sessionId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                },
+                "leaseId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                },
+                "bootId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                }
+              }
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "commandResult"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sessionId",
+                "leaseId",
+                "bootId",
+                "operationId",
+                "status",
+                "result"
+              ],
+              "properties": {
+                "sessionId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                },
+                "leaseId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                },
+                "bootId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                },
+                "operationId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                },
+                "status": {
+                  "enum": [
+                    "succeeded",
+                    "failed",
+                    "rejected"
+                  ]
+                },
+                "result": {
+                  "type": "object",
+                  "description": "Runtime also enforces at most 8192 UTF-8 JSON bytes and operation-specific result fields."
+                }
+              }
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "revokeRequest"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sessionId"
+              ],
+              "properties": {
+                "sessionId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                }
+              }
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "statusQuery"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sessionId"
+              ],
+              "properties": {
+                "sessionId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                }
+              }
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        }
+      ]
+    }
+  ]
+}

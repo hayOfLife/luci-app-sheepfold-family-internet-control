@@ -1,0 +1,466 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sheepfold.example/schemas/remote-support/typed-server-message-v1.schema.json",
+  "title": "Sheepfold typed HTTPS: server messages",
+  "description": "Current source-only typed HTTPS profile. Not an installable OpenWrt client or deployment permission. Runtime must verify canonical IDs, signatures, stream/sequence, deadlines, operation consent and byte limits.",
+  "allOf": [
+    {
+      "$ref": "signed-payload-v1.schema.json"
+    },
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "messageType": {
+              "const": "enrollChallenge"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "challenge",
+                "clientNonce",
+                "candidateKeyId",
+                "profile"
+              ],
+              "properties": {
+                "challenge": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{43}$"
+                },
+                "clientNonce": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                },
+                "candidateKeyId": {
+                  "type": "string",
+                  "pattern": "^router-[a-f0-9]{40}$"
+                },
+                "profile": {
+                  "const": "sheepfold-support-control-1"
+                }
+              }
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "enrollAccepted"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "routerId",
+                "keyId",
+                "profile"
+              ],
+              "properties": {
+                "routerId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{22}$"
+                },
+                "keyId": {
+                  "type": "string",
+                  "pattern": "^router-[a-f0-9]{40}$"
+                },
+                "profile": {
+                  "const": "sheepfold-support-control-1"
+                }
+              }
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "statusQuery"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "profile",
+                "capabilities"
+              ],
+              "properties": {
+                "profile": {
+                  "const": "sheepfold-support-control-1"
+                },
+                "capabilities": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "maxItems": 6,
+                  "items": {
+                    "enum": [
+                      "claimV1",
+                      "localRevokeV1",
+                      "typedControlRelayV1",
+                      "diagnosticRecipesV1",
+                      "localApprovalV1",
+                      "restartResumeV1"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "claimOpened"
+            },
+            "payload": {
+              "$ref": "#/$defs/status"
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "claimAccepted"
+            },
+            "payload": {
+              "$ref": "#/$defs/status"
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "sessionActive"
+            },
+            "payload": {
+              "$ref": "#/$defs/status"
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "sessionResumed"
+            },
+            "payload": {
+              "$ref": "#/$defs/status"
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "revokeConfirmed"
+            },
+            "payload": {
+              "$ref": "#/$defs/status"
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "statusQuery"
+            },
+            "payload": {
+              "$ref": "#/$defs/status"
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        },
+        {
+          "properties": {
+            "messageType": {
+              "const": "sessionCommand"
+            },
+            "payload": {
+              "$ref": "#/$defs/commandStatus"
+            }
+          },
+          "required": [
+            "messageType",
+            "payload"
+          ]
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "state",
+        "claimExpiresAt",
+        "accessExpiresAt",
+        "leaseExpiresAt",
+        "ticketId",
+        "leaseId",
+        "pollAfterSeconds",
+        "diagnosticsAllowed"
+      ],
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{22}$"
+        },
+        "state": {
+          "enum": [
+            "claimOpen",
+            "sessionPreparing",
+            "sessionReady",
+            "sessionActive",
+            "reconnecting",
+            "claimBlocked",
+            "claimExpired",
+            "revoked",
+            "sessionExpired",
+            "securityBlocked"
+          ]
+        },
+        "claimExpiresAt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "accessExpiresAt": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "leaseExpiresAt": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ticketId": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "leaseId": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{22}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pollAfterSeconds": {
+          "const": 30
+        },
+        "diagnosticsAllowed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "commandStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "state",
+        "claimExpiresAt",
+        "accessExpiresAt",
+        "leaseExpiresAt",
+        "ticketId",
+        "leaseId",
+        "pollAfterSeconds",
+        "diagnosticsAllowed",
+        "command"
+      ],
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{22}$"
+        },
+        "state": {
+          "enum": [
+            "claimOpen",
+            "sessionPreparing",
+            "sessionReady",
+            "sessionActive",
+            "reconnecting",
+            "claimBlocked",
+            "claimExpired",
+            "revoked",
+            "sessionExpired",
+            "securityBlocked"
+          ]
+        },
+        "claimExpiresAt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "accessExpiresAt": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "leaseExpiresAt": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ticketId": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "leaseId": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{22}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pollAfterSeconds": {
+          "const": 30
+        },
+        "diagnosticsAllowed": {
+          "type": "boolean"
+        },
+        "command": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operationId",
+            "kind",
+            "recipeId",
+            "changeId",
+            "planHash",
+            "expiresAt"
+          ],
+          "properties": {
+            "operationId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{22}$"
+            },
+            "kind": {
+              "enum": [
+                "diagnostic",
+                "prepareChange",
+                "applyChange"
+              ]
+            },
+            "recipeId": {
+              "enum": [
+                null,
+                "systemOverview",
+                "networkHealth",
+                "serviceHealth"
+              ]
+            },
+            "changeId": {
+              "enum": [
+                null,
+                "reloadSheepfold",
+                "reapplySheepfoldFirewall"
+              ]
+            },
+            "planHash": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "expiresAt": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        }
+      }
+    }
+  }
+}

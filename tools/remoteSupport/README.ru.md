@@ -2,9 +2,10 @@
 
 <!-- §rsup001 -->
 
-Эта папка содержит исполняемый reference-контракт и локальный стенд экспериментального
-control-профиля. Он проверяет точные байты подписи, строгий JSON, сроки, replay-защиту и обмен
-с настоящим private control service до появления OpenWrt manager.
+Эта папка содержит текущий source-контракт `sheepfold-support-control-1` и локальный
+HTTPS/typed стенд, а также явно отделённые исторические модели. Устанавливаемый OpenWrt
+клиент отложен владельцем 23.10.2026; эта работа согласует только схемы и тестовый обмен.
+Основание: [ADR-0031](../../docs/architecture/decisions/0031-typed-https-remote-support.ru.md).
 
 Она **не является runtime Sheepfold** и не должна импортироваться в LuCI, shell/ucode backend или APK:
 
@@ -17,6 +18,18 @@ control-профиля. Он проверяет точные байты подп
 
 ## Состав
 
+- `typedPayload.mjs`, `schemas/typed-router-message-v1.schema.json` и `typed-server-message-v1.schema.json` - текущие строгие поля, capabilities, status и allowlist команд; без исполнения recipes;
+- `runControlPeer.mjs` - текущий ручной HTTPS/mTLS/TOTP стенд: synthetic операции, reboot resume, restart и revoke; не устанавливаемый клиент;
+- `tests/remoteSupportTypedProtocol.test.mjs` - public-only регрессии текущего контракта (файл находится в корневом `tests/`).
+
+Остальные файлы ниже являются общими primitives либо прежними моделями. `ControlClient`,
+`experimental-*` и CSR/grant используют старые профили; текущий сервер их не принимает.
+Они не являются автоматическим fallback или планом установки FRP/SSH.
+
+`createLabChannel` по умолчанию выбирает текущий typed профиль и `/v1/support/*`.
+Legacy `/experimental/support/*` допустимы только при явном `profile: controlProfile`
+в историческом тесте. Ответ другого профиля отклоняется, повторной попытки по старому route нет.
+
 - `protocolModel.mjs` - стабильный фасад публичных экспортов reference-контракта;
 - `protocolValues.mjs` - версии, лимиты, имена сообщений, состояния и общие проверки полей;
 - `strictJson.mjs` - ограниченный duplicate-safe UTF-8/JSON parser;
@@ -27,7 +40,6 @@ control-профиля. Он проверяет точные байты подп
 - `controlClient.mjs` - последовательный клиентский автомат enrollment/capabilities/claim/status/revoke; только volatile state, без network/file side effects;
 - `transportPayload.mjs`, `transportClient.mjs` - отдельный экспериментальный CSR/grant-профиль и RAM-only клиент проверки сертификата; не FRP/SSH manager;
 - `labChannel.mjs` - HTTPS исключительно к localhost, CA + hostname + certificate pin, два router route, bounded bytes/timeout, без redirect;
-- `runControlPeer.mjs` - ручной двусторонний стенд с private HTTPS service, отдельным сертификатом оператора и настоящим TOTP; не читает конфигурацию действующего сервера;
 - `schemas/signed-envelope-v1.schema.json` - внешняя JSON Schema;
 - `schemas/signed-payload-v1.schema.json` - общая JSON Schema подписанного сообщения;
 - `schemas/enrollment-start-v1.schema.json` - единственное узкое неподписанное bootstrap-тело до регистрации публичного ключа роутера; оно всё равно передаётся только через проверенный TLS;
@@ -44,7 +56,9 @@ relay map, safe-apply, проверенный native adapter и durable manager.
 experimental status намеренно строже общей формы JSON Schema: без transport lease нельзя
 принять `sessionReady/sessionActive/reconnecting` или ненулевую lease. Заглушку LuCI не разблокировать.
 
-## Клиентский автомат
+## Исторический клиентский автомат
+
+Этот раздел относится только к прежнему `ControlClient`, не к текущему typed профилю.
 
 `ControlClient` получает отдельный Ed25519 private key, ограниченную карту доверенных server
 public keys, часы и monotonic uptime. В стенде ключи синтетические; production trust manifest
@@ -86,6 +100,42 @@ Caller будущего backend обязан проверить права до 
 это защита RAM-автомата, не watchdog живого SSH.
 
 ## Проверка
+
+### Профильные регрессии public checkout
+
+Рабочий каталог: корень публичного проекта. Нужны Node.js 20+, OpenSSL в PATH,
+доступный OS temp и loopback; private checkout этому набору не нужен. PowerShell:
+
+```powershell
+$targets = @(Get-ChildItem -LiteralPath tests -Filter 'remoteSupport*.test.mjs' | ForEach-Object { $_.FullName })
+node --test @targets tests/changeImpact.test.mjs tests/testCategories.test.mjs tests/documentationOperations.test.mjs
+```
+
+Ожидается exit `0`, `106 pass`, `0 fail`, `0 skip` для текущего состава. Проверяются
+текущий wire, изолированные старые модели, TLS-граница, impact и категории/документационные
+связи. Файловые fixtures используют случайные temp-каталоги с очисткой, network tests —
+только loopback. Реальные серверы, ключи, UCI и устройства не затрагиваются.
+Не передавайте wildcard `tests/remoteSupport*.test.mjs` прямо Node в Windows: PowerShell
+не обязан раскрывать его; используйте массив выше. `ENOENT` для OpenSSL и `EPERM/EACCES`
+для temp/child/loopback не исправляются отключением TLS. Этот набор не является OpenWrt,
+полным product gate, JSON Schema engine conformance или production security audit.
+
+`validateTypedServerMessage(message, now)` требует явное время получения. Подпись и общий
+envelope проверяются до этого вызова. Срок команды/lease сравнивается с `now`, а не только
+с подписанным временем отправки: задержанный, но ещё не истёкший envelope не оживляет
+уже истёкшую команду. Противоречивые status/lease и нестроковые identity key IDs отвергаются.
+
+После изменения этого контракта из того же public root выполнить:
+
+```powershell
+npm.cmd run lint:js
+npm.cmd run quality:docs:all
+git diff --check
+```
+
+Ожидаются exit `0`, отсутствие ESLint/whitespace ошибок и успешный аудит 300 Markdown-файлов
+для текущего состава. Эти команды проверяют исходники и ссылки, не запускают Android/SDK,
+не устанавливают пакет и не доказывают техническую истинность каждого абзаца.
 
 ### Отдельный клиент transport credentials
 
@@ -146,14 +196,14 @@ node tools/remoteSupport/checkPeerContract.mjs --peer C:\path\to\sheepfold-suppo
 
 Golden key намеренно синтетический и публичный. Запрещено использовать его либо производные от него ключи в сервере, пакете или тестовом роутере.
 
-### HTTPS и два проекта
+### Текущий HTTPS/typed обмен двух проектов
 
 Предварительные условия: `openssl` в PATH, разрешённый loopback socket, два доверенных checkout.
 Путь `C:\path\to\sheepfold-support-server` заменить абсолютным путём private repo. Скрипт
 импортирует его JS-код: нельзя передавать неизвестный/скачанный непроверенный каталог.
 
 ```powershell
-node --test tests/remoteSupportControlHttp.test.mjs
+node --test tests/remoteSupportTypedProtocol.test.mjs tests/remoteSupportControlHttp.test.mjs
 node tools/remoteSupport/runControlPeer.mjs --peer C:\path\to\sheepfold-support-server
 ```
 
@@ -162,28 +212,37 @@ node tools/remoteSupport/runControlPeer.mjs --peer C:\path\to\sheepfold-support-
 обычный public CI не зависит от закрытого репозитория.
 
 Ожидание: exit 0, fail 0. Сквозной стенд печатает одну JSON-строку:
-`ok:true,checks:12,tls:true,operatorMfa:true,transportReady:false,immutableRelease:false`.
+`ok:true,profile:"sheepfold-support-control-1",checks:21,tls:true,operatorMfa:true,syntheticFilesystem:true,routerRuntime:false,immutableRelease:false`.
 Он создаёт случайный каталог `sheepfold-control-peer-*` в OS temp, отдельные однодневные
 сертификаты server/operator, ephemeral signing/identity keys, store и TLS listener на
 `127.0.0.1:0`. В `finally` listener/store закрываются, удаляется только созданный каталог.
 При аварийном kill автоматическая очистка не гарантирована; удалять только проверенный каталог
 этого запуска после завершения процесса. Реальные key stores, Git, UCI и VPS не затрагиваются.
 
-Проверки: enrollment и обе подписи; честные capabilities; потерянный claim response; отсутствие
-открытого кода в store; mTLS + TOTP оператора; сгорание кода и 24 часа; запрет prepare без
-transport capability; отказ оператору без сертификата; неправильный server pin; потерянный
-revoke response без нового sequence; status после отзыва; реальное закрытие/reopen server store.
-Отдельный HTTP-тест проверяет redirects, неверный Content-Type, duplicate JSON, oversized body,
-rate limit, разрыв socket и timeout.
+Проверки: enrollment и обе подписи; текущие capabilities; точный повтор claim/result/revoke;
+отсутствие открытого кода в store; mTLS + TOTP; исходные 24 часа; три diagnostics и оба
+prepare/apply recipe с synthetic результатами; запрет apply без подготовленного plan hash;
+отказ без operator certificate; неправильный server pin; fresh lease после имитации router
+reboot и настоящего restart временного store/service; status после отзыва.
+HTTP-тест отдельно проверяет TLS, отсутствие fallback между профилями, redirects,
+Content-Type, duplicate JSON, размер, rate limit, разрыв socket и timeout.
+
+Filesystem statistics намеренно синтетические: используется настоящий capacity predicate
+с подставными данными свободного места. Поэтому заполненный более чем на 90% диск разработчика
+не блокирует wire-тест. Настоящий server capacity guard не меняется; этот стенд не проверяет
+заполнение диска. Recipes не исполняются, локальное approval моделируется только test data:
+стенд не доказывает согласие настоящего владельца или безопасность router-side apply.
 
 Типовые ошибки: `ENOENT` означает отсутствующий openssl/checkout; `EPERM/EACCES` означает
 запрет запуска дочернего процесса или записи temp/loopback в среде, а не повод отключить TLS.
-`supportPeerFailed` содержит только безопасный `stage`, без ключей/кода/ответа. Не добавлять
+`supportPeerFailed` содержит `stage`, технический `cause` и номер строки стенда, если доступен,
+без ключей/кода/ответа. Не добавлять
 дамп private input ради отладки. `storageBusy` не исправлять удалением реального server lock:
 стенд использует только свежий temp store.
 
 Запрещены запуск helper на роутере с установкой Node ради теста, WAN bind, настоящий endpoint,
 `rejectUnauthorized:false`, обход pin, общий production key или FRP token. Green Node/HTTPS
 gate не доказывает native crypto, нагрузку Xiaomi AX3000T, firewall isolation, reboot manager,
-работу FRP/Dropbear, safe-apply или production готовность. Публикация public commit и обновление
+локальное consent/approval, watchdog, safe-apply или production готовность. FRP/SSH не являются
+следующим gate: они заменены ADR-0031. Публикация public commit и обновление
 private vendor revision/SHA-256 остаются отдельным release-шагом.

@@ -8,27 +8,31 @@ import { request } from 'node:https';
 import { checkServerIdentity } from 'node:tls';
 import { parseStrictJson } from './strictJson.mjs';
 import { controlProfile } from './experimentalPayload.mjs';
+import { typedControlProfile } from './typedPayload.mjs';
 import { fail, ProtocolError, requireExactKeys } from './protocolValues.mjs';
 
 const routes = {
   enrollment: '/experimental/support/enrollment/start',
   router: '/experimental/support/router',
 };
+const typedRoutes = { enrollment: '/v1/support/enrollment/start', router: '/v1/support/router' };
 const serverErrors = new Set([
   'messageMalformed', 'rateLimited', 'signatureInvalid', 'routerUnknown', 'sequenceReplay',
   'sequenceGap', 'stateConflict', 'protocolUnsupported', 'messageNotYetValid', 'messageExpired',
   'claimExpired', 'claimNotOpen', 'claimAlreadyUsed', 'claimCodeInvalid', 'claimAttemptsExceeded',
   'sessionRevoked', 'sessionExpired', 'clockUntrusted', 'storageCapacityReached',
   'storageUnavailable', 'transportUnavailable', 'internalError',
+  'operationUnknown', 'approvalRequired', 'actionForbidden',
 ]);
 
-export function createLabChannel({ baseUrl, ca, certificateHash, timeoutMs = 5000 }) {
+export function createLabChannel({ baseUrl, ca, certificateHash, timeoutMs = 5000, profile = typedControlProfile }) {
   const target = new URL(baseUrl);
   if (target.protocol !== 'https:' || target.hostname !== 'localhost' || !target.port ||
       target.username || target.password || target.pathname !== '/' || target.search || target.hash ||
       !Buffer.isBuffer(ca) || !ca.length || ca.length > 65536 ||
       !/^[a-f0-9]{64}$/.test(certificateHash) ||
-      !Number.isSafeInteger(timeoutMs) || timeoutMs < 50 || timeoutMs > 15000) {
+      !Number.isSafeInteger(timeoutMs) || timeoutMs < 50 || timeoutMs > 15000 ||
+      ![controlProfile, typedControlProfile].includes(profile)) {
     fail('messageMalformed', 'invalid lab channel configuration');
   }
   return async function post(kind, wire) {
@@ -42,7 +46,7 @@ export function createLabChannel({ baseUrl, ca, certificateHash, timeoutMs = 500
         settled = true; clearTimeout(timer);
         if (error) reject(error); else resolve(result);
       };
-      const outgoing = request(new URL(routes[kind], target), {
+      const outgoing = request(new URL((profile === typedControlProfile ? typedRoutes : routes)[kind], target), {
         method: 'POST', agent: false, ca, minVersion: 'TLSv1.2', rejectUnauthorized: true,
         family: 4, lookup: (_host, _options, done) => done(null, '127.0.0.1', 4),
         maxHeaderSize: 8192,
@@ -77,7 +81,7 @@ export function createLabChannel({ baseUrl, ca, certificateHash, timeoutMs = 500
               fail(value.errorCode);
             }
             requireExactKeys(value, ['ok', 'profile', 'result'], 'server response');
-            if (value.profile !== controlProfile) fail('protocolUnsupported');
+            if (value.profile !== profile) fail('protocolUnsupported');
             finish(null, JSON.stringify(value.result));
           } catch (error) { finish(error); }
         });

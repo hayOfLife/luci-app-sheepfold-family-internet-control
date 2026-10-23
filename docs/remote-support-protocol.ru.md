@@ -2,13 +2,67 @@
 
 <!-- §rsup001 -->
 
-Статус: проектный контракт `v1`, экспериментальный control-профиль и отдельный Node transport-клиент (31.08.2026).
-В [`tools/remoteSupport/`](../tools/remoteSupport/README.ru.md) реализованы предметные проверки,
-клиентский Node.js автомат и ручной двусторонний HTTPS-стенд с private server. Это не OpenWrt
-runtime: FRP/SSH, ключевой manifest и manager роутера ещё отсутствуют. LuCI-заглушка остаётся
-заблокированной до полного backend и живого transport PoC.
+Статус: проектный контракт `v1`; текущий source-профиль `sheepfold-support-control-1`
+согласуется с private HTTPS service. Устанавливаемый OpenWrt-клиент отложен владельцем
+23.10.2026; LuCI-заглушка остаётся неактивной. Наличие Node.js стенда не означает runtime.
 
-Документ определяет сообщения между Sheepfold на роутере и будущим control plane. FRP переносит зашифрованный поток, но не решает выдачу разрешения, сроки, отзыв, защиту от replay и аутентификацию сотрудника.
+## Текущий HTTPS/typed контракт
+
+[ADR-0031](architecture/decisions/0031-typed-https-remote-support.ru.md) заменяет FRP/SSH-часть
+ADR-0022. Домашний клиент в будущем использует только исходящий HTTPS и Ed25519-signed
+messages; оператор — mTLS и TOTP. Нет FRP, reverse SSH, общего `runShell`, WAN LuCI или LAN routing.
+
+Канонические источники текущего source-профиля:
+
+- [typed payload validator](../tools/remoteSupport/typedPayload.mjs);
+- [router schema](../tools/remoteSupport/schemas/typed-router-message-v1.schema.json);
+- [server schema](../tools/remoteSupport/schemas/typed-server-message-v1.schema.json);
+- [двусторонний стенд и команды запуска](../tools/remoteSupport/README.ru.md).
+
+Envelope, preimage и прежний Ed25519 golden vector сохранены. Общий перечень message types
+расширен; текущий typed validator не принимает legacy profile, SSH host key или transport grant.
+Сравнение только общей envelope schema не доказывает совместимость предметных payload.
+
+| Router message | Точные поля payload |
+|---|---|
+| `enrollProof` | `challenge`, `clientNonce` |
+| `capabilityReport` | `profile`, `capabilities` |
+| `claimOpen` | `sessionId`, `code`, `claimExpiresAt`, `diagnosticsAllowed` |
+| `sessionResume` | `sessionId`, `bootId` |
+| `sessionReady`, `heartbeat`, `commandPoll` | `sessionId`, `leaseId`, `bootId` |
+| `commandResult` | `sessionId`, `leaseId`, `bootId`, `operationId`, `status`, `result` |
+| `revokeRequest`, `statusQuery` | `sessionId` |
+
+Capabilities: `claimV1`, `localRevokeV1`, `typedControlRelayV1`, `diagnosticRecipesV1`,
+`localApprovalV1`, `restartResumeV1`. Claim требует весь текущий набор, не legacy transport token.
+Опрос — 30 секунд; lease — не более 120 секунд; signed reply — 60 секунд; общий message TTL —
+не более 300 секунд. Срок claim — до 72 часов, после принятия доступ — до 24 часов без продления.
+
+`sessionResume` идёт по новому control stream. Другие session messages связаны со своим
+`sessionId`. Server status содержит `sessionId`, `state`, `claimExpiresAt`, `accessExpiresAt`,
+`leaseExpiresAt`, `ticketId`, `leaseId`, `pollAfterSeconds`, `diagnosticsAllowed`.
+`sessionCommand` дополнительно содержит типовую команду. После reboot нужны повторное
+enrollment той же identity, свежие boot ID/lease и прежний deadline; старое approval не переносится.
+
+Разрешены diagnostic recipes `systemOverview`, `networkHealth`, `serviceHealth` и подготовка/
+применение `reloadSheepfold`, `reapplySheepfoldFirewall`. Результат ограничен 8192 JSON bytes;
+сервер дополнительно проверяет поля по типу операции. В отличие от ciphertext bug reports,
+typed diagnostics доступны control-серверу: состав безопасных результатов и согласие должны
+быть проверены до реальных клиентов. Стенд отправляет только synthetic данные.
+
+Node validator серверных сообщений принимает явное время получения:
+`validateTypedServerMessage(message, now)`. Проверки envelope/подписи выполняются заранее;
+команда и активная lease должны быть действующими именно при получении. Закрытый статус не
+может сохранять lease, непринятый claim не содержит access/lease/ticket, а `sessionReady`
+и `sessionPreparing` имеют ещё не активированную lease со сроком `0`. Это source-регрессии,
+не реализация watchdog или локального исполнения на OpenWrt.
+
+## Исторический FRP/SSH-проект
+
+Остальные разделы ниже сохраняют первоначальный проект и эксперименты 31.08.2026.
+Они не являются действующим планом установки. При конфликте с текущим HTTPS/typed разделом
+или ADR-0031 применяется новое решение. Старые схемы и `ControlClient` сохраняются для
+регрессионных исследований, но не подаются на текущий сервер и не используются как fallback.
 
 ## Цели протокола
 

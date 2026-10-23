@@ -407,6 +407,7 @@ export const testCategories = Object.freeze({
     'remoteSupportTransport.test.mjs',
     'remoteSupportControl.test.mjs',
     'remoteSupportControlHttp.test.mjs',
+    'remoteSupportTypedProtocol.test.mjs',
     'remoteSupportSessionSimulator.test.mjs',
     'androidFamilyMessageRelayRuntime.test.mjs',
     'familyMessageRelayArchitecture.test.mjs',

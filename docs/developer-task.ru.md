@@ -192,11 +192,11 @@ API `/cgi-bin/sheepfold-api/client-status` возвращает `warning_before_
 | [`docs/live-router-testing.ru.md`](live-router-testing.ru.md) | Тестирование на роутере |
 | [`docs/messaging.ru.md`](messaging.ru.md) | Интеграция мессенджеров |
 | [`docs/android-router-message-relay.ru.md`](android-router-message-relay.ru.md) | Точные параметры local-first обмена родительского APK с роутером через необязательный relay (§mrelay1) |
-| [`docs/remote-support-access-plan.ru.md`](remote-support-access-plan.ru.md) | Архитектура временного доступа техподдержки, FRP, Podkop bypass и отзыв (§rsup001) |
+| [`docs/remote-support-access-plan.ru.md`](remote-support-access-plan.ru.md) | Текущий HTTPS/typed план, отзыв и отложенный OpenWrt-клиент; старый FRP-проект только для истории (§rsup001) |
 | [`docs/remote-support-threat-model.ru.md`](remote-support-threat-model.ru.md) | Активы, угрозы, fail-closed controls и блокирующие условия выпуска техподдержки (§rsup001) |
 | [`docs/remote-support-protocol.ru.md`](remote-support-protocol.ru.md) | Проектный protocol `v1`: identity, подписи, сроки, порты, replay, состояния и error codes (§rsup001) |
 | [`docs/remote-support-server-integration.ru.md`](remote-support-server-integration.ru.md) | Граница публичного router client и закрытого server/operator проекта, владение контрактами и cross-repo проверка (§rsuppeer) |
-| [`tools/remoteSupport/README.ru.md`](../tools/remoteSupport/README.ru.md) | Исполняемый control-клиент, предметные проверки и ручной HTTPS/MFA peer-стенд; не OpenWrt/FRP runtime (§rsup001) |
+| [`tools/remoteSupport/README.ru.md`](../tools/remoteSupport/README.ru.md) | Текущий typed wire, предметные проверки и ручной HTTPS/MFA peer-стенд; не OpenWrt runtime (§rsup001) |
 | [`docs/privacy.ru.md`](privacy.ru.md) | Политика конфиденциальности |
 | [`docs/ai-assistant-development/README.md`](ai-assistant-development/README.md) | Архитектура будущего ИИ-помощника и карта модулей |
 - [Фоновые задания обслуживания](maintenance-jobs.ru.md) — ротация RAM-журнала, консервативная очистка offline-карточек, обычные уведомления об обновлении и явно включаемый часовой бета-режим (§maintjob1, §betatest1).

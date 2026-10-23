@@ -2,6 +2,42 @@
 
 <!-- §rsuppeer -->
 
+## Проверка совместимости 23.10.2026
+
+Серверная source-реализация действительно ушла вперёд: она использует
+`sheepfold-support-control-1`, а прежний public `ControlClient` моделирует
+`sheepfold-support-server-experimental-1`. Первоначальный `supportPeerMismatch`
+сравнивал эти разные экспериментальные профили, а не два работающих устройства.
+Это не ошибка уже установленного Podkop, телефона или production-сервиса.
+
+Теперь текущий публичный контракт выделен в `typedPayload.mjs` и
+`typed-*-message-v1.schema.json`; ручной `runControlPeer.mjs` проверяет именно его
+против нынешнего private service. Добавлены `sessionResume`, `commandPoll`,
+`commandResult` и `sessionResumed`; `claimOpen` не содержит `routerHostKey`.
+У текущего профиля другие capabilities и расширенный signed status, включая lease,
+diagnostic consent и 30-секундный интервал опроса. Подпись и общий golden vector не менялись.
+
+По решению владельца 23.10.2026 устанавливаемый OpenWrt-клиент отложен. Node.js
+reference не является этим клиентом. Ни заглушка LuCI, ни новый runtime на роутере/VPS
+не включаются. [ADR-0031](architecture/decisions/0031-typed-https-remote-support.ru.md)
+согласует публичную архитектуру с private ADR-0016 без FRP/SSH.
+
+Различайте четыре независимых результата:
+
+| Проверка | Что означает успех |
+|---|---|
+| metadata peer | совпали repository URL, contract ID и major; не runtime |
+| `support:peer-check` в private | текущие typed поля и подписи согласованы с рабочим public checkout |
+| `runControlPeer.mjs` в public | synthetic HTTPS/mTLS/TOTP и обмен с текущим private source |
+| frozen vendor/release | совпал конкретный закреплённый исторический snapshot; обновляется отдельно после review/public commit |
+
+Старые `experimental-*` схемы и CSR/grant сохранены для истории, но не становятся
+fallback текущего сервера. Vendor hashes не переписываются ради зелёного результата.
+Точные команды и границы приведены в
+[runbook стенда](../tools/remoteSupport/README.ru.md). Семейный relay остаётся отдельной подсистемой.
+
+## Исторические контрольные точки
+
 Статус: спроектирована граница двух репозиториев. В private repo уже есть отключённый по
 умолчанию loopback-only OpenWrt PoC очереди зашифрованных отчётов и read-only operator CLI.
 Production TLS endpoint, рабочая пара ключей расшифрования и runtime удалённого управления ещё
@@ -13,7 +49,7 @@ Production TLS endpoint, рабочая пара ключей расшифров
 FRP/SSH не добавлены. Команда, ожидаемые результаты и ограничения находятся в
 [`tools/remoteSupport/README.ru.md`](../tools/remoteSupport/README.ru.md).
 
-Следующий экспериментальный slice добавляет отдельные `transportRequest/transportGrant` и
+Исторический экспериментальный slice добавлял отдельные `transportRequest/transportGrant` и
 Node-only `TransportClient`: CSR связывается router-подписью, ответ проверяется по CA/SPKI и
 неизменяемой lease, token/replay остаются в RAM. Это не новый production HTTP endpoint и не
 готовый manager; старые control capabilities по умолчанию не меняются. Точный wire и server-side
@@ -36,20 +72,23 @@ Private vendor pin обновляется только после review/public 
 
 ## Архитектура
 
-```text
-Домашний Sheepfold
-  -> исходящий HTTPS/mTLS: отчёты и control messages
-  -> временный FRP transport: только принятый support session
+Действующая выбранная архитектура ADR-0031/private ADR-0016:
 
-Публичный OpenWRT-узел с белым IPv4
-  -> хранит encrypted report queue и минимальные metadata
-  -> проверяет claim/MFA/deadline/sequence
-  -> соединяет router и operator, но не создаёт доступ сам
+```text
+Домашний Sheepfold (клиент отложен)
+  -> исходящий HTTPS + Ed25519: typed control messages
+  -> локальное разрешение, подтверждение exact plan hash, независимый revoke
+
+Сервер Sheepfold (Debian primary, OpenWrt reserve)
+  -> проверяет identity/claim/MFA/deadline/sequence
+  -> хранит ограниченную очередь типовых операций и результатов
+  -> не создаёт разрешение владельца и не исполняет shell на роутере
 
 Операторский ноутбук с серым IP
   -> сам подключается к server
   -> локально расшифровывает отчёты
-  -> запускает supportctl и ограниченный Codex bridge
+  -> операторский доступ через mTLS + TOTP
+  -> supportctl и будущий ограниченный Codex bridge
 ```
 
 Публичный сервер не получает root password, LuCI cookie, Android Bearer, домашнюю LAN route или ключ расшифрования баг-репортов.
@@ -74,8 +113,9 @@ synthetic support/report трафику. Ни один из них **не явл
 ## Владение контрактами
 
 План следующего support milestone находится в private-проекте:
-`docs/remote-support-implementation-plan.ru.md`. Он покрывает identity/claim/MFA, FRP/bastion,
-отзыв уже открытого SSH и интеграцию новой вкладки «Тех поддержка» в LuCI и родительском APK.
+`docs/remote-support-implementation-plan.ru.md`. Он покрывает identity/claim/MFA,
+типовые operations, fresh lease после reboot, независимый отзыв и будущую интеграцию
+вкладки «Тех поддержка». Этап OpenWrt manager и пользовательской активации отложен владельцем.
 По уточнению владельца 30.08.2026 тестовое развёртывание не выполняется: это документационный
 checkpoint серверного deployment, не разрешение открыть дополнительные порты. Последующий
 локальный control-стенд не отменяет этот запрет.
@@ -87,7 +127,7 @@ checkpoint серверного deployment, не разрешение откры
 | Формат и router verifier подписанного резервного report endpoint | этот public repo |
 | Encrypted report envelope и очередь | private server repo |
 | Offline signer резервного endpoint и церемония его ключа | private server repo |
-| Control persistence, operator MFA, relay/bastion | private server repo |
+| Control persistence, operator MFA, typed dispatcher | private server repo |
 | supportctl, JSON CLI и local Codex MCP bridge | private server repo |
 | Family message relay envelope, payload, AES-GCM vector и router/phone protocol | этот public repo |
 | Family message relay credentials, opaque queue и loopback runtime | private server repo |

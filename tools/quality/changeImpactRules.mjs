@@ -204,11 +204,11 @@ export const impactRules = Object.freeze([
   Object.freeze({
     id: 'remoteSupportProtocol',
     area: 'Экспериментальный public/private support contract',
-    pattern: /^(?:tools\/remoteSupport\/|tests\/remoteSupportTransport)/,
+    pattern: /^(?:tools\/remoteSupport\/|tests\/remoteSupport)/,
     categories: ['security', 'tooling'],
     checks: ['docs', 'lintJs'],
     risk: 'critical',
-    review: 'Сверить private vendor pin, CSR/CA/SPKI, RAM-only replay и неизменяемые сроки; Node contract не доказывает SSH или router runtime.',
+    review: 'Сверить current typed schema/validator, peer HTTPS/MFA, неизменяемые сроки и исторический vendor pin; не смешивать legacy CSR/grant с текущим профилем. Node wire-стенд не доказывает router runtime или local approval.',
     full: true,
   }),
   Object.freeze({
