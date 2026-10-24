@@ -1472,11 +1472,12 @@ router_info() {
         [ "$(uci -q get sheepfold.global.product_variant 2>/dev/null || printf sheepfold)" != sheepfoldAi ] || \
                 sheepfold_package='luci-app-sheepfold-ai-support'
         sheepfold_version="$(package_version "$sheepfold_package")"
-        podkop_version="$(package_version_any podkop luci-app-podkop || true)"
+        # В Podkop 0.8 движок встроен в podkop-exp, отдельного пакета sing-box может не быть
+        podkop_version="$(package_version_any podkop podkop-exp luci-app-podkop luci-app-podkop-exp || true)"
         adguard_version="$(package_version_any AdGuardHome adguardhome luci-app-adguardhome || true)"
         podkop_version_status="not_installed"
         if [ -n "$podkop_version" ]; then
-                if package_upgradable_any podkop luci-app-podkop; then
+                if package_upgradable_any podkop podkop-exp luci-app-podkop luci-app-podkop-exp; then
                         podkop_version_status="outdated"
                 else
                         podkop_version_status="up_to_date"

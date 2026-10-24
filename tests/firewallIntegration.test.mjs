@@ -1,5 +1,6 @@
 /*
- * Проверяет порядок и границы Sheepfold-owned nftables интеграции статически.
+ * Проверяет порядок и границы Sheepfold-owned nftables интеграции статически
+ * Читает package source без сети, записи конфигов или изменения состояния роутера
  * Тест ловит опасное изменение приоритетов и вмешательство в Podkop, но реальное
  * прохождение пакетов подтверждается только безопасным стендом на OpenWrt.
  */
@@ -14,6 +15,7 @@ const read = (path) => readFileSync(resolve(repoRoot, path), 'utf8');
 
 const firewall = read('package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-firewall');
 const tableSnippet = read('package/luci-app-sheepfold-family-internet-control/root/usr/share/nftables.d/table-pre/30-sheepfold.nft');
+const earlySnippet = read('package/luci-app-sheepfold-family-internet-control/root/usr/share/nftables.d/table-pre/31-sheepfold-prerouting.nft');
 const forwardSnippet = read('package/luci-app-sheepfold-family-internet-control/root/usr/share/nftables.d/chain-pre/forward/30-sheepfold.nft');
 const inputSnippet = read('package/luci-app-sheepfold-family-internet-control/root/usr/share/nftables.d/chain-pre/input/30-sheepfold.nft');
 const routerControl = read('package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-router-control-legacy');
@@ -25,6 +27,14 @@ const installer = read('install.sh');
 const makefile = read('package/luci-app-sheepfold-family-internet-control/Makefile');
 
 describe('fw4 access enforcement and integration profiles', () => {
+  it('checks the existing policy before Podkop TPROXY without intercepting local services', () => {
+    assert.match(earlySnippet, /type filter hook prerouting priority -160; policy accept;/);
+    assert.match(earlySnippet, /fib daddr type \{ local, broadcast, multicast \} return/);
+    assert.match(earlySnippet, /jump sheepfold_forward_guard/);
+    assert.ok(earlySnippet.indexOf('fib daddr') < earlySnippet.indexOf('jump sheepfold_forward_guard'));
+    assert.doesNotMatch(earlySnippet, /\b(?:tproxy|redirect|dnat|snat)\b|meta mark set|PodkopTable|\baccept\s+comment/);
+  });
+
   it('uses package-author fw4 hooks and only Sheepfold-owned sets and chains', () => {
     assert.match(tableSnippet, /set sheepfold_block_macs/);
     assert.match(tableSnippet, /set sheepfold_management_block_macs/);

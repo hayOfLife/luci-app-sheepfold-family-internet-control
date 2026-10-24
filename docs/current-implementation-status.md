@@ -1,5 +1,29 @@
 # Current Implementation Status
 
+## Physical traffic regression on 2026-10-24
+
+Source r325 adds a prerouting policy guard before Podkop TPROXY after a real phone
+exposed a bypass of global/restricted blocking through the proxy. Device allowlist
+and blocklist checks use real Wi-Fi-bound TCP/HTTP/HTTPS, not only status or nft set
+membership. The router still has r286 plus the isolated nft hotfix, not an installed
+r325 package. Exact observations, transient proxy failures and limits are recorded
+in [the live test record](live-router-testing.ru.md#проверка-трафика-телефона-24102026).
+An additional manual gate covers two already-open direct/proxy TLS sockets:
+global/device blocking stops further replies, while the device allowlist preserves
+both sockets under the global block. Proxy TLS resets also occur before blocking
+and from the router itself; upstream stability is still unresolved.
+No source publication, release, reboot or new package installation is implied.
+
+After the owner installed experimental `podkop-exp 0.8.1-r1`, the seven-phase
+physical-phone matrix passed again (35 TCP/HTTP/HTTPS probes). This run uses the
+embedded `podkop` engine, not a separate sing-box process; see the
+[0.8.1 record](live-router-testing.ru.md#проверка-экспериментального-podkop-081-24102026).
+Two firewall-reload phases and a final restored baseline also passed, bringing
+this 0.8.1 run to 50 successful probes; Podkop and network configuration stayed unchanged.
+Source r325 also recognizes experimental package names in `router-info` (B168).
+That diagnostic correction passed native execution from RAM but is not installed
+in the permanent r286 helper. The earlier nft hotfix remains installed.
+
 ## Local audit on 2026-10-10
 
 Base: r324 / `0f2f00f`, matching GitHub main at the start of this audit. Source fixes

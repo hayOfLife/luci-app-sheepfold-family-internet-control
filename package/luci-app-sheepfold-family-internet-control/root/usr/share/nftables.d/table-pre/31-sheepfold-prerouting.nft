@@ -1,0 +1,7 @@
+# TPROXY Podkop уводит пакет в input до forward, поэтому проверяем ту же политику раньше
+# Локальные DNS/DHCP/LuCI остаются задачей input_guard, обычный forward сохраняет свой guard
+chain sheepfold_prerouting_guard {
+	type filter hook prerouting priority -160; policy accept;
+	fib daddr type { local, broadcast, multicast } return comment "Sheepfold local services stay in input"
+	jump sheepfold_forward_guard comment "Sheepfold policy before proxy interception"
+}

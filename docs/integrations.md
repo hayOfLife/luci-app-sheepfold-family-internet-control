@@ -25,6 +25,29 @@ Suggested values:
 
 Do not use a simple mutually exclusive `none/adguard/podkop` model only. AdGuard Home and Podkop can be used together, and this is one of the target scenarios.
 
+Since source r325, a Sheepfold-owned `prerouting` guard at priority `-160` evaluates
+the existing device/site policy before Podkop TPROXY at `-150`. Checking only fw4
+`forward` is insufficient: transparent proxy traffic is delivered to local `input`
+instead. Local/broadcast/multicast destinations continue to the normal input path,
+where the device-blocklist management guard still applies. Allowed traffic returns
+to normal processing; Sheepfold does not set Podkop marks, alter its routes or
+edit its nftables table. The forward guard remains for ordinary routed traffic.
+The physical-phone regression and limitations are in
+[the live test record](live-router-testing.ru.md#проверка-трафика-телефона-24102026).
+
+Experimental Podkop `podkop-exp 0.8.1-r1` was also tested on OpenWrt 25.12.5.
+Its `/usr/bin/podkop daemon` embeds the proxy engine: neither a separate `sing-box`
+process nor `/etc/init.d/sing-box` is required. In this observed version Podkop
+marks packets at `-150` and applies TPROXY at `-100`; Sheepfold's `-160` guard still
+runs first. Do not infer future experimental compatibility from version numbering.
+Router information now recognizes `podkop-exp` and `luci-app-podkop-exp` as well
+as stable package names, preferring backend packages over LuCI-only packages.
+The installer already detects the shared `/etc/init.d/podkop` service; it does not
+need to install a separate engine or replace the owner's experimental package.
+Package freshness means the system package manager's available update state,
+not a check of the latest experimental GitHub release. See the
+[0.8.1 physical test and limits](live-router-testing.ru.md#проверка-экспериментального-podkop-081-24102026).
+
 The setting should be stored as:
 
 ```text

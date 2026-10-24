@@ -108,12 +108,12 @@ Caller будущего backend обязан проверить права до 
 
 ```powershell
 $targets = @(Get-ChildItem -LiteralPath tests -Filter 'remoteSupport*.test.mjs' | ForEach-Object { $_.FullName })
-node --test @targets tests/changeImpact.test.mjs tests/testCategories.test.mjs tests/documentationOperations.test.mjs
+node --test @targets tests/changeImpact.test.mjs tests/testCategories.test.mjs tests/documentationOperations.test.mjs tests/architectureDecisions.test.mjs
 ```
 
-Ожидается exit `0`, `106 pass`, `0 fail`, `0 skip` для текущего состава. Проверяются
+Ожидается exit `0`, `111 pass`, `0 fail`, `0 skip` для текущего состава. Проверяются
 текущий wire, изолированные старые модели, TLS-граница, impact и категории/документационные
-связи. Файловые fixtures используют случайные temp-каталоги с очисткой, network tests —
+связи, включая статусы заменённых ADR. Файловые fixtures используют случайные temp-каталоги с очисткой, network tests —
 только loopback. Реальные серверы, ключи, UCI и устройства не затрагиваются.
 Не передавайте wildcard `tests/remoteSupport*.test.mjs` прямо Node в Windows: PowerShell
 не обязан раскрывать его; используйте массив выше. `ENOENT` для OpenSSL и `EPERM/EACCES`

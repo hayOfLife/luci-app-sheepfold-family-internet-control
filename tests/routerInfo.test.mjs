@@ -2,7 +2,8 @@
  * Защищает контракт панели «Информация»: backend обязан вернуть непустой
  * диагностический снимок, а стандартные цели проверки связи не должны
  * зависеть от иностранных сервисов, которые могут быть недоступны в России.
- * Статический тест не подтверждает реальный ICMP-ответ конкретного роутера.
+ * Проверяет исходники и синтетический снимок без изменения роутера
+ * Статический тест не подтверждает реальный ICMP-ответ или работу proxy
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -123,5 +124,15 @@ describe('Router information panel', () => {
     assert.doesNotMatch(overview, /function formatInstalledPackageInfo|function packageVersionStatusLabel/);
     assert.match(infoModule, /values\.podkop_version_status/);
     assert.match(infoModule, /function packageInfo/);
+  });
+
+  it('detects stable and experimental Podkop backends before LuCI-only packages', () => {
+    const source = readProjectFile(legacyPath);
+    const packages = ['podkop', 'podkop-exp', 'luci-app-podkop', 'luci-app-podkop-exp'];
+    const version = source.match(/podkop_version="\$\(package_version_any ([^|]+)\|\| true\)"/);
+    const freshness = source.match(/if package_upgradable_any ([^;]+); then/);
+
+    assert.deepEqual(version?.[1].trim().split(/\s+/), packages);
+    assert.deepEqual(freshness?.[1].trim().split(/\s+/), packages);
   });
 });

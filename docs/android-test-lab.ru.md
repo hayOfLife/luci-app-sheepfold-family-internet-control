@@ -8,6 +8,89 @@ Sheepfold. Стенд запускается **только по явной ко
 полного предрелизного прохода. Обычные `npm.cmd test`, `quality:changed` и CI не
 скачивают system images и не запускают виртуальные телефоны.
 
+## Реальный трафик и списки устройств
+
+`InternetPolicyLiveTest` — ручной физический gate, не обычный smoke: отправляет
+TCP на публичный IPv4, получает HTTP и два HTTPS-ответа (direct/proxy domain),
+отдельно проверяет TCP к веб-интерфейсу роутера. Использует только конкретную
+Wi-Fi `Network` с явно указанным gateway, исключая default cellular/VPN маршрут.
+Ничего не меняет в UCI, токенах, разрешениях или настройках телефона; фазу политики
+подготавливает оператор по [живой матрице](live-router-testing.ru.md#проверка-трафика-телефона-24102026).
+Не добавлять его в безусловный gate чистой установки.
+
+Рабочий каталог — корень client checkout, PowerShell, JDK 17, Android SDK, Node.js
+не требуется. Нужны разрешённый USB-debugging телефон с совместимой подписью
+основного debug APK, доступные Android dependencies и Wi-Fi тестового роутера.
+
+```powershell
+android\gradlew.bat -p android :app:assembleDebugAndroidTest --console=plain
+$adb = Join-Path $env:ANDROID_HOME 'platform-tools\adb.exe'
+$serial = 'PHONE_SERIAL'
+& $adb -s $serial install -r -t android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+& $adb -s $serial shell am instrument -w -r -e class app.sheepfold.android.router.InternetPolicyLiveTest -e liveTraffic 1 -e trafficExpected open -e trafficRouter 192.168.4.1 -e trafficLan open -e trafficScope all app.sheepfold.android.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+`PHONE_SERIAL` взять из `adb devices -l`; `trafficRouter` заменить частным IPv4
+именно тестового gateway (текущая защита допускает `192.168.x.x`). `trafficExpected`
+и `trafficLan` принимают только `open`/`blocked`. `trafficScope=all` включает все
+пять probes; явный `direct` исключает proxy-domain и не доказывает совместимость
+с Podkop. Ожидаются `BUILD SUCCESSFUL`, install `Success`, пять совпадающих
+`TRAFFIC_PROBE`, `TRAFFIC_SCOPE all` и `OK (1 test)` без failures/assumption skip.
+Exit `adb` сам по себе недостаточен: Android runner может сообщить test failure
+при успешной доставке shell-команды. Без `liveTraffic=1` класс намеренно skipped.
+`UnknownHostException` всегда делает этот gate неуспешным, даже при ожидаемой
+блокировке: ошибка DNS не доказывает запрет прямого или proxy-трафика. Сначала
+проверить DNS и рабочий baseline; не принимать такой отказ за зелёную проверку.
+
+`No cached version available for offline mode` означает отсутствующий cache:
+повторить обычную сборку без `--offline`, не менять версии зависимостей. При
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE` не удалять приложение/данные: нужен тот же
+debug signer или другой разрешённый телефон. `Exactly one Wi-Fi network` требует
+подключить телефон к нужному роутеру, а не убрать привязку к Wi-Fi. Отказ HTTPS
+при разрешённой политике проверить также с роутера; TLS не отключать. Нельзя
+запускать весь instrumentation package на привязанном телефоне: там есть
+отдельные destructive first-launch scenarios. Ставится только test APK, основной
+APK и его данные не очищаются. Артефакты сборки остаются в ignored `android/app/build`.
+
+Проверка доказывает только указанную фазу и работающие контрольные endpoints.
+Не охватывает все приложения, QUIC, IPv6, offload, все VPN и power-loss;
+зелёный результат не заменяет отдельный stability gate.
+
+### Уже открытые соединения
+
+Дополнительный ручной режим `trafficEstablished=1` проверяет повторный запрос
+по двум уже открытым TLS-сокетам: прямому `1.1.1.1:443` и proxy-domain
+`www.gstatic.com:443`. Используется та же Wi-Fi Network, штатная проверка CA и
+имени сервера; новый сокет при отказе не создаётся. Сначала каждый сокет получает
+два HEAD-ответа, затем тест печатает `TRAFFIC_READY` и ждёт 30 секунд. HEAD выбран,
+чтобы не скачивать тело и не путать старые буферизованные данные с новым ответом.
+В этом режиме HTTP 2xx/3xx/4xx подтверждает обмен; 4xx у корневого пути gstatic
+не означает отсутствие интернета. HTTP 5xx или `Connection: close` не принимаются.
+
+В том же PowerShell с подготовленными `$adb` и `$serial`:
+
+```powershell
+& $adb -s $serial shell am instrument -w -r -e class app.sheepfold.android.router.InternetPolicyLiveTest -e liveTraffic 1 -e trafficExpected blocked -e trafficRouter 192.168.4.1 -e trafficLan open -e trafficScope all -e trafficEstablished 1 app.sheepfold.android.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Начать с разрешённого интернета. В отдельной SSH-сессии после `TRAFFIC_READY`,
+но до окончания 30 секунд, выполнить `global-block-on` по живой матрице и записать
+время успешного применения. Проверить независимый proxy HTTPS с роутера.
+Ожидаются два `TRAFFIC_ESTABLISHED ... actual=false` и `OK (1 test)`.
+`trafficLan` в этом режиме не проверяется; LAN проверяет обычный пятишаговый режим.
+Для телефона из белого списка использовать `trafficExpected=open`: после общего
+запрета оба сокета должны остаться рабочими. Отдельный контроль без изменения
+политики с `open` доказывает, что сервер сам не закрыл соединение за эту паузу.
+
+Если до `TRAFFIC_READY` возник `Connection reset`, фаза не началась: не включать
+запрет и не засчитывать отказ как успешную блокировку. `TRAFFIC_CONNECTING` указывает
+направление ошибки. Если команда не уложилась в окно, результат недействителен;
+повторить фазу с новым baseline. Не включать запрет заранее: тест должен успеть
+получить исходные ответы. Не запускать этот режим с `trafficScope=direct`.
+После завершения или ошибки снять общий запрет и вернуть исходный статус телефона
+по живому runbook. Проверяются два конкретных TCP/TLS-потока, а не все приложения,
+не непрерывная загрузка и не сохранность соединений при offload.
+
 ## Зачем нужен гибридный стенд
 
 Одного эмулятора недостаточно. Он хорошо воспроизводит Android API, lifecycle,

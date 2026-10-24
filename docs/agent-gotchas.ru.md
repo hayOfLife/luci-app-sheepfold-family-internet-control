@@ -17,6 +17,15 @@
 
 ## Обязательное правило для агентов
 
+- Экспериментальный Podkop 0.8 поставляется как `podkop-exp` со встроенным движком:
+  отсутствие отдельного `sing-box` не доказывает отказ; проверять Podkop, DNS и трафик.
+  [Совместимость и границы](integrations.md) (§routerharness).
+
+- Podkop TPROXY обходит обычный `forward`: общий запрет и `restricted` требуют
+  раннего Sheepfold guard (`prerouting -160`), а не только правильных sets/status.
+  [Живой packet-level сценарий](live-router-testing.ru.md#проверка-трафика-телефона-24102026)
+  использует Wi-Fi-bound TCP/HTTP/HTTPS и отдельно проверяет работоспособность proxy (§v7x2k9p, §routerharness).
+
 - Git push после передачи объектов может завершиться `curl 28`, но вывести `Everything up-to-date`: сверять удалённый SHA; проверенный процессный helper `gh` описан в [окружении](agent-environment.ru.md#push-зависает-после-передачи-объектов) (§toolwin).
 
 - Экспорт настроек: `wps_pin`, `r0kh`, `r1kh` требуют маскирования, а лимит 5 МиБ относится к итоговому UTF-8 файлу с шифрованной оболочкой, не к числу символов или открытому JSON; [контракт backup](settings-backup.ru.md) (§cfgbak1).
