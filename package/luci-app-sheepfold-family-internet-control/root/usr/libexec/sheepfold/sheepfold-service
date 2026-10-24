@@ -91,7 +91,10 @@ handle_maintenance() {
         local mode now interval
         mode="${1:-periodic}"
         [ -x "$MAINTENANCE_HELPER" ] || return 0
-        now="$(date +%s)"
+        # Отсчёт обслуживания должен переживать исправление или сброс календарных часов
+        now="$(cut -d. -f1 "${SHEEPFOLD_TIME_UPTIME_FILE:-/proc/uptime}" 2>/dev/null)" || return 1
+        case "$now" in ''|*[!0-9]*) return 1 ;; esac
+        [ "${#now}" -le 9 ] || return 1
         # The service wakes the helper on a fixed, cheap cadence. Per-task state
         # below decides whether hourly/daily/weekly work is actually due; this is
         # intentionally not another hidden UCI setting. §maintjob1

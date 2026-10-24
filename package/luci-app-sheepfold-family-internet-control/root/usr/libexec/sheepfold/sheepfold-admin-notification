@@ -151,7 +151,9 @@ cleanup_notifications() {
 		[ -n "$name" ] || continue
 		read_notification "$STATE_DIR/$name" || return 1
 		expired=0
-		if [ "$NOTICE_TIME" -gt "$now" ] || [ $((now - NOTICE_TIME)) -gt "$MAX_AGE_SECONDS" ]; then
+		# При сбое часов уведомление о самом сбое не должно вычищать прежнюю очередь
+		if [ "$now" -ge 1704067200 ] && [ "$now" -lt 4133980800 ] &&
+		   [ "$NOTICE_TIME" -le "$now" ] && [ $((now - NOTICE_TIME)) -gt "$MAX_AGE_SECONDS" ]; then
 			expired=1
 		elif [ "$NOTICE_ID" != "$protected" ]; then
 			count=$((count + 1))

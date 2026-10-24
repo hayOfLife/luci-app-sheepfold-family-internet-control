@@ -14,6 +14,9 @@ SYSTEM_CONFIG="${SHEEPFOLD_TIME_SYSTEM_CONFIG:-/etc/config/system}"
 SHEEPFOLD_CONFIG="${SHEEPFOLD_TIME_APP_CONFIG:-/etc/config/sheepfold}"
 SYSNTPD_INIT="${SHEEPFOLD_SYSNTPD_INIT:-/etc/init.d/sysntpd}"
 LOG_HELPER="${SHEEPFOLD_LOG_HELPER:-/usr/libexec/sheepfold/sheepfold-log}"
+RECOVERY_DIR="${SHEEPFOLD_TIME_RECOVERY_DIR:-/tmp/sheepfold/time-recovery}"
+UPTIME_FILE="${SHEEPFOLD_TIME_UPTIME_FILE:-/proc/uptime}"
+NOTIFIER="${SHEEPFOLD_NOTIFICATION_HELPER:-/usr/libexec/sheepfold/sheepfold-admin-notification}"
 TRANSACTION_DIR=""
 TRANSACTION_ACTIVE=0
 SYSTEM_COMMIT_STARTED=0
@@ -75,8 +78,115 @@ normalize_servers() {
 clock_sane() {
 	year="$(date +%Y 2>/dev/null || printf 0)"
 	case "$year" in ''|*[!0-9]*) year=0 ;; esac
-	[ "$year" -ge 2024 ]
+	[ "$year" -ge 2024 ] && [ "$year" -le 2100 ]
 }
+
+# Состояние только в RAM: ошибочные часы не ускоряют повтор и не вызывают записи UCI
+write_recovery() {
+	local temporary
+	temporary="$(mktemp "$RECOVERY_DIR/.state.XXXXXX")" || return 1
+	if ! printf '%s %s %s %s %s\n' "$attempts" "$last_attempt" "$notified" "$last_notice" "$result" > "$temporary" ||
+	   ! chmod 600 "$temporary" || ! mv -fT "$temporary" "$RECOVERY_DIR/state"; then
+		rm -f "$temporary"
+		return 1
+	fi
+}
+
+notify_invalid_clock() {
+	local title message language
+	[ "$notified" = 0 ] || return 0
+	[ "$last_notice" = 0 ] || [ $((uptime - last_notice)) -ge 300 ] || return 0
+	last_notice="$uptime"
+	write_recovery || return 1
+	language="$(uci_get sheepfold.global.language)"
+	if [ "$language" = ru ]; then
+		title='Неверная дата на роутере'
+		message='Проверьте время и NTP в настройках Sheepfold. Автоматически восстановить дату пока не удалось; расписания могут работать неверно. Выключенный NTP автоматически не включается.'
+	else
+		title='Incorrect router date'
+		message='Check router time and NTP in Sheepfold settings. Automatic recovery has not restored the date; schedules may work incorrectly. Disabled NTP is not enabled automatically.'
+	fi
+	if [ -x "$NOTIFIER" ] && "$NOTIFIER" enqueue system clock:invalid "$title" "$message" 9>&- >/dev/null 2>&1; then
+		notified=1
+		write_recovery || return 1
+		log_event 'Неверная дата роутера: уведомление добавлено в очередь родителей'
+	fi
+}
+
+recover_time() (
+	local year uptime attempts last_attempt notified last_notice result enabled
+	# Тот же lock исключает гонку с собственным редактором NTP, а не со всеми writers OpenWrt
+	sheepfold_lock_acquire "$TIME_LOCK" 1 || return 1
+	trap 'sheepfold_lock_release' EXIT
+	# После сигнала нельзя продолжать запись state уже без общей блокировки
+	trap 'exit 129' HUP
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+	year="$(date +%Y 2>/dev/null)" || return 1
+	case "$year" in [0-9][0-9][0-9][0-9]) ;; *) return 1 ;; esac
+	[ ! -L "$RECOVERY_DIR" ] && [ ! -L "$RECOVERY_DIR/state" ] || return 1
+	if [ "$year" -ge 2024 ] && [ "$year" -le 2100 ]; then
+		if [ -e "$RECOVERY_DIR/state" ]; then
+			[ -f "$RECOVERY_DIR/state" ] && rm -f "$RECOVERY_DIR/state" || return 1
+		fi
+		printf 'recovery_status=healthy\n'
+		return 0
+	fi
+	uptime="$(cut -d. -f1 "$UPTIME_FILE" 2>/dev/null)" || return 1
+	case "$uptime" in ''|*[!0-9]*) return 1 ;; esac
+	[ "${#uptime}" -le 9 ] || return 1
+	# Даём штатной загрузочной синхронизации три минуты без вмешательства
+	if [ "$uptime" -lt 180 ]; then
+		printf 'recovery_status=boot_grace\n'
+		return 0
+	fi
+	umask 077
+	mkdir -p "$RECOVERY_DIR" && chmod 700 "$RECOVERY_DIR" || return 1
+	attempts=0 last_attempt=0 notified=0 last_notice=0 result=waiting
+	if [ -e "$RECOVERY_DIR/state" ]; then
+		[ -f "$RECOVERY_DIR/state" ] && [ "$(wc -c < "$RECOVERY_DIR/state")" -le 128 ] || return 1
+		read -r attempts last_attempt notified last_notice result < "$RECOVERY_DIR/state" || return 1
+		# read видит только первую строку и может скрыть NUL, поэтому сверяем всю запись
+		printf '%s %s %s %s %s\n' "$attempts" "$last_attempt" "$notified" "$last_notice" "$result" |
+			cmp -s "$RECOVERY_DIR/state" - || return 1
+		case "$attempts:$notified" in [012]:[01]) ;; *) return 1 ;; esac
+		case "$last_attempt:$last_notice" in *[!0-9:]*|:*|*:) return 1 ;; esac
+		[ "${#last_attempt}" -le 9 ] && [ "${#last_notice}" -le 9 ] || return 1
+		[ "$last_attempt" -le "$uptime" ] && [ "$last_notice" -le "$uptime" ] || return 1
+		case "$result" in waiting|starting|syncing|failed|disabled|unavailable|exhausted) ;; *) return 1 ;; esac
+	fi
+	enabled="$(uci -q get system.ntp.enabled 2>/dev/null)" || enabled=unknown
+	case "$enabled" in
+		0) result=disabled ;;
+		1)
+			if [ "$last_attempt" != 0 ] && [ $((uptime - last_attempt)) -lt 300 ]; then
+				printf 'recovery_status=%s\n' "$result"
+				return 0
+			fi
+			if [ "$attempts" -ge 2 ]; then
+				result=exhausted
+			elif [ ! -x "$SYSNTPD_INIT" ] || ! command -v timeout >/dev/null 2>&1; then
+				result=unavailable
+			else
+				attempts=$((attempts + 1))
+				last_attempt="$uptime"
+				result=starting
+				# Запись до restart сохраняет лимит при ошибке или обрыве команды
+				write_recovery || return 1
+				if timeout -k 2 15 "$SYSNTPD_INIT" restart 9>&- >/dev/null 2>&1; then
+					result=syncing
+				else
+					result=failed
+				fi
+				log_event "Попытка восстановления даты через штатный NTP: $attempts, $result"
+			fi
+			;;
+		*) result=unavailable ;;
+	esac
+	write_recovery || return 1
+	case "$result" in disabled|unavailable|failed|exhausted) notify_invalid_clock || return 1 ;; esac
+	printf 'recovery_status=%s\n' "$result"
+)
 
 print_status() {
 	country="$(normalize_country "$(uci_get sheepfold.global.country_profile)")"
@@ -369,6 +479,7 @@ save_time() {
 
 case "$COMMAND" in
 	status) print_status ;;
+	recover) recover_time ;;
 	save) save_time "$@" ;;
-	*) echo 'Usage: sheepfold-time-control [status|save SERVER_ENABLED CLIENT_ENABLED ZONENAME TIMEZONE SERVERS COUNTRY]' >&2; exit 2 ;;
+	*) echo 'Usage: sheepfold-time-control [status|recover|save SERVER_ENABLED CLIENT_ENABLED ZONENAME TIMEZONE SERVERS COUNTRY]' >&2; exit 2 ;;
 esac

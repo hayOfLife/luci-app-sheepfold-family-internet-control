@@ -106,6 +106,20 @@ describe('Notification list is complete and truthful', () => {
 });
 
 describe('Notification storage and retention', () => {
+  it('preserves existing events when a clock warning is queued under an implausible date', () => {
+    for (const now of ['86400', '4133980800']) withFixture((f) => {
+      const current = f.seed(), before = f.text(current);
+      const result = f.enqueue('clock:invalid', 'Clock warning', 'Check NTP', { TEST_NOW: now });
+      assert.equal(result.status, 0, result.stderr);
+      preserved(f, current, before);
+      assert.equal(f.records().length, 2);
+    });
+  });
+  it('does not expire an event solely because the clock moved backwards', () => withFixture((f) => {
+    const future = f.seed({ created_at: notificationNow + 3600 }), before = f.text(future);
+    assert.equal(f.list().status, 0);
+    preserved(f, future, before);
+  }));
   it('retains the exact TTL boundary and prunes only older records', () => withFixture((f) => {
     const edge = f.seed({ dedupe_key: 'edge', created_at: notificationNow - 2592000 });
     const old = f.seed({ dedupe_key: 'old', created_at: notificationNow - 2592001 });

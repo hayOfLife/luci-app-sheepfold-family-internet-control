@@ -1,5 +1,24 @@
 # Current Implementation Status
 
+## Bounded clock recovery in source r326
+
+The existing maintenance loop now requests bounded recovery of an implausible date
+through an already enabled OpenWrt NTP client. Both cadence and retry budget use uptime;
+there are at most two restarts, no UCI writes, and a deduplicated parent notification
+on failure. The notification queue no longer age-prunes under an implausible epoch.
+Both package variants depend on `coreutils-timeout` to bound init execution.
+[The time contract](time-and-detection-setup.ru.md) documents failure modes and tests.
+On 2026-10-24, `coreutils-timeout` 9.9-r2 was installed on the test OpenWrt 25.12.5.
+The manual native probe passed eight checks, including a 17-second timeout, real
+flock/symlink guards and an enabled NTP restart, without changing configuration.
+The Sheepfold package itself was not upgraded. Real NTP recovery after boot,
+installation of r326 and phone delivery remain unverified.
+The state reader now compares the entire record byte-for-byte; a reproduced extra-line
+acceptance no longer starts NTP. A second fixture-only native run passed all eight checks.
+A separate query-only `ntpd -w` probe received four replies while Podkop was running;
+it did not set the clock and is not proof of recovery from an invalid boot date.
+Schedule fallback while the clock is invalid remains a separate unfinished task.
+
 ## Physical traffic regression on 2026-10-24
 
 Source r325 adds a prerouting policy guard before Podkop TPROXY after a real phone

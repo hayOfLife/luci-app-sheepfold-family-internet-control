@@ -198,6 +198,12 @@ describe('test IPK executable permissions', () => {
     assert.match(control, /^Depends:.*(?:^|, )ucode-mod-socket(?:,|$)/m);
   });
 
+  it('ships time recovery as executable with its bounded-process dependency', () => {
+    const ipkPath = buildTestIpk();
+    assert.equal(tarMode(ipkPath, './usr/libexec/sheepfold/sheepfold-time-control'), '0o755');
+    assert.match(controlText(ipkPath, './control'), /^Depends:.*(?:^|, )coreutils-timeout(?:,|$)/m);
+  });
+
   it('ships the pairing diagnostic helper as executable in data.tar.gz', () => {
     const mode = tarMode(
       buildTestIpk(),

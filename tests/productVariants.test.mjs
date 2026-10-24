@@ -239,6 +239,8 @@ printf '%s' "$mockPriority"
       assert.doesNotMatch(aiControl, /Conflicts: luci-app-sheepfold-family-internet-control/);
       assert.match(standard.control.get('control').toString('utf8'), /Depends:.*uhttpd, luci-ssl, curl/);
       assert.match(ai.control.get('control').toString('utf8'), /Depends:.*uhttpd, luci-ssl, curl/);
+      assert.match(standardControl, /^Depends:.*(?:, )coreutils-timeout(?:,|$)/m);
+      assert.match(aiControl, /^Depends:.*(?:, )coreutils-timeout(?:,|$)/m);
 
       const installer = readFileSync(join(root, 'install.sh'), 'utf8');
       assert.match(installer, /sheepfold_package_install_file "\$PACKAGE_FILE" 1/);

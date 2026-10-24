@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-sheepfold-family-internet-control
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=325
+PKG_RELEASE:=326
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=hayOfLife
 SHEEPFOLD_UI_ASSET_VERSION:=$(PKG_VERSION)-$(PKG_RELEASE)
@@ -13,7 +13,8 @@ LUCI_DESCRIPTION:=Family internet access control for OpenWRT with LuCI, Android,
 # luci-ssl остаётся общим HTTPS-метапакетом для OpenWrt 24.10 и 25.12.
 # Отдельного uhttpd-mod-tls в feed 25.12 уже нет, поэтому он ломает установку APK.
 # QR v2 вычисляет SPKI SHA-256 штатным openssl и не доверяет сети до проверки ключа.
-LUCI_DEPENDS:=+luci-base +firewall4 +rpcd +uci +jshn +uclient-fetch +ca-bundle +uhttpd +luci-ssl +curl +flock +openssl-util +ucode-mod-socket
+# GNU timeout ограничивает restart NTP без самописного управления дочерними процессами
+LUCI_DEPENDS:=+luci-base +firewall4 +rpcd +uci +jshn +uclient-fetch +ca-bundle +uhttpd +luci-ssl +curl +flock +openssl-util +ucode-mod-socket +coreutils-timeout
 
 # Supported LuCI languages (gettext)
 LUCI_LANGUAGES:=en ru zh_Hans

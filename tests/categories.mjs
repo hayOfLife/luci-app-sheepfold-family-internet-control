@@ -173,6 +173,7 @@ export const testCategories = Object.freeze({
     'siteListResilience.test.mjs',
   ],
   backend: [
+    'timeRecoveryRuntime.test.mjs',
     'yandexDiskRuntime.test.mjs',
     'yandexBackupRuntime.test.mjs', 'yandexUploadRuntime.test.mjs', 'yandexEventsRuntime.test.mjs', 'yandexSyncRuntime.test.mjs', 'yandexDownloadRuntime.test.mjs', 'yandexContextRuntime.test.mjs',
     'googleDriveUploadRuntime.test.mjs',
@@ -255,6 +256,7 @@ export const testCategories = Object.freeze({
     'updateTransportSafety.test.mjs',
   ],
   backendFast: [
+    'timeRecoveryRuntime.test.mjs',
     'deviceInventoryAggregation.test.mjs',
     'nativeMessageRelayCrypto.test.mjs',
     'luciCoordinatorForwarderCleanup.test.mjs',

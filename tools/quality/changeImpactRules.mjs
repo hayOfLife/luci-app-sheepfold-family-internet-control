@@ -98,13 +98,23 @@ const controlRuntimeConsumers = Object.freeze([
 
 export const impactRules = Object.freeze([
   Object.freeze({
+    id: 'clockRecovery',
+    area: 'Восстановление часов и сохранность уведомлений при неверной дате',
+    pattern: /(?:sheepfold-(?:time-control|maintenance|service|admin-notification)$|^tools\/router-testing\/timeRecoveryProbe\.sh$)/,
+    categories: ['backendFast'],
+    checks: ['routerReadOnly'],
+    risk: 'high',
+    directTests: Object.freeze(['timeRecoveryRuntime.test.mjs', 'adminNotificationRuntime.test.mjs', 'maintenanceJobs.test.mjs']),
+    review: 'Отсчёт service и recovery по uptime; максимум два restart без включения NTP, RAM-state и общий time-lock. Неверная дата не удаляет очередь по возрасту. Native NTP и доставка на телефон проверяются отдельно.',
+  }),
+  Object.freeze({
     id: 'timeSettingsLifecycle',
     area: 'Снимок настроек времени и результат post-commit NTP',
     pattern: /(?:sheepfold\/features\/(?:settings\/time|overview\/application)\.js|sheepfold-time-control)$/,
     categories: ['luci', 'backendFast'],
     checks: ['routerFrontend', 'routerReadOnly'],
     risk: 'high',
-    directTests: Object.freeze(['timeSettingsLifecycle.test.mjs', 'timeTransactionRecovery.test.mjs', 'timeSaveConfirmation.test.mjs', 'timeAndDetectionSetup.test.mjs',
+    directTests: Object.freeze(['timeRecoveryRuntime.test.mjs', 'timeSettingsLifecycle.test.mjs', 'timeTransactionRecovery.test.mjs', 'timeSaveConfirmation.test.mjs', 'timeAndDetectionSetup.test.mjs',
       'settingsSaveLifecycle.test.mjs', 'luciCommandActions.test.mjs', 'portableShellAndStatus.test.mjs',
       'overviewSettingsExtraction.test.mjs', 'overviewFinalRuntime.test.mjs',
       'frontendModules.test.mjs', 'overviewLocalization.test.mjs', 'cloudArchiveSafety.test.mjs']),
@@ -197,7 +207,7 @@ export const impactRules = Object.freeze([
     categories: ['backendFast', 'packaging'],
     checks: ['routerReadOnly'],
     risk: 'high',
-    directTests: Object.freeze(['maintenanceJobs.test.mjs', 'maintenanceRotationRuntime.test.mjs', 'legacyLogRuntime.test.mjs', 'logWriterRuntime.test.mjs', 'packageHardeningRuntime.test.mjs']),
+    directTests: Object.freeze(['timeRecoveryRuntime.test.mjs', 'maintenanceJobs.test.mjs', 'maintenanceRotationRuntime.test.mjs', 'legacyLogRuntime.test.mjs', 'logWriterRuntime.test.mjs', 'packageHardeningRuntime.test.mjs']),
     review: 'Ротация сохраняет исходный журнал при отказе подготовки и использует общий lock; не смешивать её с очисткой устройств и установкой обновлений.',
   }),
 

@@ -1,6 +1,7 @@
 /* §country1 §persist1
  * Real time-control and lock/restore files, narrow UCI model. No real clock,
  * router or network mutations. Every injected failure records a reached marker.
+ * Fixture files are removed afterwards; passing does not prove live NTP sync.
  */
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, chmodSync, rmSync, existsSync, readdirSync } from 'node:fs';
@@ -13,6 +14,7 @@ import { prepareFixtureFlock, completedProcess, runtimeTimeout } from './helpers
 
 const repo = process.cwd();
 const native = process.platform !== 'win32';
+const python = (process.env.PYTHON_EXECUTABLE || (native ? 'python3' : 'python')).replaceAll('\\', '/');
 const lib = resolve('package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold');
 const quote = value => `'${value.replace(/'/g, "'\\''")}'`;
 const values = data => Object.fromEntries(data.trim().split('\n').filter(Boolean).map(line => { const p = line.indexOf('='); return [line.slice(0, p), line.slice(p + 1)]; }));
@@ -97,7 +99,7 @@ function fixture(t, opts = {}) {
   const put = (name, code) => { const p = join(bin, name); writeFileSync(p, code); chmodSync(p, 0o755); return p; };
   writeFileSync(join(root, 'system'), encode(system)); writeFileSync(join(root, 'sheepfold'), encode(app));
   writeFileSync(join(root, 'model.py'), model);
-  put('uci', '#!/bin/sh\nexec python3 -S "$TIME_MODEL" "$@"\n'); prepareFixtureFlock(put);
+  put('uci', `#!/bin/sh\nexec ${quote(python)} -S "$TIME_MODEL" "$@"\n`); prepareFixtureFlock(put);
   put('date', '#!/bin/sh\nprintf "clock %s\\n" "$*" >> "$TIME_CASE/trace"\ncase "$1" in +%s) printf "%s" "$TIME_CLOCK"; exit "$TIME_CLOCK_EXIT" ;; +%Y) printf "2026\\n" ;; *) exit 2 ;; esac\n');
   put('log', '#!/bin/sh\nprintf "log\\n" >> "$TIME_CASE/trace"\n');
   put('logger', '#!/bin/sh\nprintf "logger\\n" >> "$TIME_CASE/trace"\n');

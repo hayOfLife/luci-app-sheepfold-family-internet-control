@@ -27,6 +27,11 @@ Sync/Upload/Download — корень fixture; `shellTestPath` должен по
 cwd. Иначе Windows-путь повторяет `.build/...` внутри уже выбранного каталога.
 Для Python-модели UCI в timeSaveConfirmation запись выполняется с `newline='\n'`:
 автоматический CRLF на Windows не является изменением параметра роутера.
+Модель использует `PYTHON_EXECUTABLE`, по умолчанию `python` на Windows и `python3`
+на POSIX. Прямой вызов `python3` из Git Bash может попасть в Windows Store alias,
+даже если PowerShell находит настоящий интерпретатор. Ошибка `Python was not found`
+и exit 49 не являются результатом проверки сохранения UCI; сначала проверить
+интерпретатор, затем повторить тест. Не ослаблять assertions ради ошибки окружения.
 Результаты Windows-прогона и границы — [принятие r324](review-r323-acceptance.ru.md).
 
 ## Где находится репозиторий

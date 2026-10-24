@@ -18,6 +18,13 @@ function fixtureConsumers(helperName) {
 }
 
 describe('change impact advisor §impact1', () => {
+  it('maps the manual native clock probe to recovery checks', () => {
+    const report = inspectChanges(['tools/router-testing/timeRecoveryProbe.sh']);
+    assert.deepEqual(report.unknown, []);
+    assert.ok(report.directTests.includes('timeRecoveryRuntime.test.mjs'));
+    assert.equal(report.fullTest, false);
+  });
+
   it('maps update wrappers and the installed updater to direct preservation checks', () => {
     for (const path of ['install.sh', 'update.sh', 'uninstall.sh',
       'package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-updater']) {
@@ -37,7 +44,7 @@ describe('change impact advisor §impact1', () => {
       'package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-time-control',
     ]) {
       const report = inspectChanges([file]);
-      for (const name of ['timeSettingsLifecycle.test.mjs', 'timeTransactionRecovery.test.mjs', 'timeSaveConfirmation.test.mjs', 'timeAndDetectionSetup.test.mjs', 'luciCommandActions.test.mjs', 'cloudArchiveSafety.test.mjs'])
+      for (const name of ['timeRecoveryRuntime.test.mjs', 'timeSettingsLifecycle.test.mjs', 'timeTransactionRecovery.test.mjs', 'timeSaveConfirmation.test.mjs', 'timeAndDetectionSetup.test.mjs', 'luciCommandActions.test.mjs', 'cloudArchiveSafety.test.mjs'])
         assert.ok(report.directTests.includes(name), `${file}: missing ${name}`);
       assert.deepEqual(report.unknown, []);
       for (const name of report.directTests)
@@ -132,9 +139,11 @@ describe('change impact advisor §impact1', () => {
 
   it('selects maintenance behavior and the shared journal consumers', () => {
     const report = inspectChanges(['package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-maintenance']);
-    for (const name of ['maintenanceJobs.test.mjs', 'maintenanceRotationRuntime.test.mjs', 'legacyLogRuntime.test.mjs', 'logWriterRuntime.test.mjs']) {
+    for (const name of ['timeRecoveryRuntime.test.mjs', 'maintenanceJobs.test.mjs', 'maintenanceRotationRuntime.test.mjs', 'legacyLogRuntime.test.mjs', 'logWriterRuntime.test.mjs']) {
       assert.ok(report.directTests.includes(name), `missing direct consumer ${name}`);
     }
+    const service = inspectChanges(['package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-service']);
+    assert.ok(service.directTests.includes('timeRecoveryRuntime.test.mjs'));
   });
 
   it('maps a shared API change to backend, Android, security and a full run', () => {
