@@ -99,7 +99,9 @@ function create(deps) {
 				throw new Error(_('AdGuard Home address must contain only the protocol, host, and optional port.'));
 			if (match[3] && (parseInt(match[3], 10) < 1 || parseInt(match[3], 10) > 65535))
 				throw new Error(_('AdGuard Home address must contain only the protocol, host, and optional port.'));
-			if (match[1].toLowerCase() === 'http' && !/^(?:127\.0\.0\.1|localhost|\[::1\])$/i.test(match[2]))
+			// Существующий адрес локальной установки повторно проверяет backend перед передачей пароля
+			if (match[1].toLowerCase() === 'http' && !/^(?:127\.0\.0\.1|localhost|\[::1\])$/i.test(match[2]) &&
+				address !== deps.sectionValue('adguard', 'url', ''))
 				throw new Error(_('Use HTTPS for AdGuard Home on another device. Unencrypted HTTP is allowed only on this router.'));
 		}
 

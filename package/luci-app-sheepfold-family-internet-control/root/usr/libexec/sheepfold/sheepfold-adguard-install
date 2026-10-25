@@ -1,0 +1,301 @@
+#!/bin/sh
+# Однократная установка: отдельное согласие, закрытый bootstrap и откат DNS без изменения Podkop
+set -eu
+umask 077
+
+LIB=/usr/libexec/sheepfold
+STATE=/etc/sheepfold/adguard-install
+CONFIG=/etc/adguardhome/adguardhome.yaml
+PROFILE=/usr/share/sheepfold/adguard-install-profile.json
+PM="$LIB/sheepfold-package-manager"
+WORK=''
+# Хеш общего начального пароля не является секретом; его проверяет native smoke AGH
+HASH='$2b$10$LFNjJWwxjIZCbrXV7nQWUOjp8b2qDcGwisF48zcDxcpfIbY.J7wSS'
+PASSWORD=password
+CHANGED=0
+SUCCESS=0
+. "$LIB/sheepfold-lock-common"
+
+reason() { printf 'reason=%s\n' "$1"; }
+fail() { reason "$1"; exit 1; }
+
+preflight() {
+    # Наличие хеша не доказывает смену известного заводского пароля
+    awk -F: '$1 == "root" && $2 ~ /^\$/ { ok=1 } END { exit !ok }' /etc/shadow 2>/dev/null || { reason root_password; return 1; }
+    [ ! -e "$STATE" ] && [ ! -L "$STATE" ] || { reason previous_install; return 1; }
+    if "$PM" installed adguardhome || [ -e /etc/init.d/adguardhome ] || [ -L /etc/init.d/adguardhome ] ||
+        pidof AdGuardHome >/dev/null 2>&1 || [ -e /etc/config/adguardhome ] || [ -L /etc/config/adguardhome ] || [ -e /etc/adguardhome ] ||
+        [ -L /etc/adguardhome ] || [ -e /etc/adguardhome.yaml ] || [ -L /etc/adguardhome.yaml ] || [ -e /usr/bin/AdGuardHome ] || [ -L /usr/bin/AdGuardHome ]; then
+        reason already_installed; return 1
+    fi
+    for tool in uci ubus jsonfilter curl timeout cmp netstat nslookup ip; do
+        command -v "$tool" >/dev/null 2>&1 || { reason missing_tools; return 1; }
+    done
+    [ -r /usr/share/libubox/jshn.sh ] || { reason missing_tools; return 1; }
+    [ "$(readlink -f /var)" = /tmp ] && grep -Eq '^[^ ]+ /tmp tmpfs ' /proc/mounts || { reason unsupported_storage; return 1; }
+    for cfg in dhcp sheepfold network; do
+        [ -f "/etc/config/$cfg" ] && [ ! -L "/etc/config/$cfg" ] || { reason unsafe_config; return 1; }
+        pending="$(uci changes "$cfg")" || return 1
+        [ -z "$pending" ] || { reason unsaved_changes; return 1; }
+    done
+    [ "$(uci -q get network.lan.proto)" = static ] || { reason unsupported_lan; return 1; }
+    LAN_IP="$(ubus call network.interface.lan status | jsonfilter -e '@["ipv4-address"][0].address')"
+    printf '%s\n' "$LAN_IP" | awk -F. 'NF!=4 {exit 1} {for(i=1;i<=4;i++) if($i!~/^[0-9]+$/ || $i>255) exit 1; if($1==0 || $1==127 || $1>=224) exit 1}' || { reason unsupported_lan; return 1; }
+    configured_ip="$(uci -q get network.lan.ipaddr)"
+    [ "${configured_ip%/*}" = "$LAN_IP" ] || { reason unsupported_lan; return 1; }
+    [ "$(uci show dhcp | grep -c '=dnsmasq$')" -eq 1 ] || { reason multiple_dnsmasq; return 1; }
+    [ "$(uci -q get dhcp.@dnsmasq[0].port || echo 53)" = 53 ] || { reason dns_layout; return 1; }
+    [ "$(uci -q get dhcp.lan.interface)" = lan ] && [ "$(uci -q get dhcp.lan.ignore || echo 0)" = 0 ] || { reason dns_layout; return 1; }
+    # В этом профиле IPv6 DNS не переключается и не должен незаметно обходить AGH
+    [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" = 1 ] || { reason ipv6_active; return 1; }
+    /etc/init.d/dnsmasq running >/dev/null 2>&1 || { reason dns_unavailable; return 1; }
+    PODKOP=0
+    if [ -x /etc/init.d/podkop ]; then
+        /etc/init.d/podkop running >/dev/null 2>&1 || { reason podkop_stopped; return 1; }
+        [ "$(uci -q get dhcp.@dnsmasq[0].server)" = 127.0.0.42 ] &&
+            [ "$(uci -q get dhcp.@dnsmasq[0].noresolv)" = 1 ] || { reason dns_layout; return 1; }
+        PODKOP=1
+    fi
+    listeners="$(netstat -lntu)" || { reason missing_tools; return 1; }
+    if printf '%s\n' "$listeners" | awk '$4 ~ /:(3000|5354|5355)$/ {found=1} END {exit !found}'; then
+        reason port_busy; return 1
+    fi
+    available="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+    flash="$(df -Pk /etc | awk 'END {print $4}')"
+    case "$available:$flash" in *[!0-9:]*|:*|*:) reason resources_unknown; return 1 ;; esac
+    [ "$available" -ge 131072 ] && [ "$flash" -ge 49152 ] || { reason low_memory; return 1; }
+}
+
+dns_probe() {
+    case "$(uci -q get sheepfold.global.country_profile || true)" in
+        ru|by) probe_host=ya.ru ;; cn) probe_host=baidu.com ;; *) probe_host=example.org ;;
+    esac
+    timeout -k 2 8 nslookup "$probe_host" "$1" >/dev/null 2>&1
+}
+
+status() {
+    if [ -d "$STATE" ] && [ ! -L "$STATE" ]; then
+        install_status="$(cat "$STATE/status" 2>/dev/null || echo interrupted)"
+        case "$install_status" in
+            installing|configuring|switching_dns|verifying)
+                pid="$(cat "$STATE/pid" 2>/dev/null || true)"
+                case "$pid" in ''|*[!0-9]*) install_status=interrupted ;;
+                    *) if ! cmp -s "$STATE/boot" /proc/sys/kernel/random/boot_id || ! kill -0 "$pid" 2>/dev/null; then install_status=interrupted; fi ;;
+                esac
+                ;;
+        esac
+        printf 'status=%s\n' "$install_status"
+        printf 'backup=%s\n' "$STATE"
+        [ ! -f "$STATE/reason" ] || reason "$(cat "$STATE/reason")"
+    elif preflight; then
+        printf 'status=ready\nlan=%s\npodkop=%s\n' "$LAN_IP" "$PODKOP"
+    else
+        printf 'status=unavailable\n'
+    fi
+}
+
+phase() {
+    printf '%s\n' "$1" > "$STATE/status.new"
+    mv -fT "$STATE/status.new" "$STATE/status"
+}
+
+atomic_copy() {
+    source_file="$1"; target_file="$2"
+    [ ! -L "$target_file" ] && { [ ! -e "$target_file" ] || [ -f "$target_file" ]; } || return 1
+    candidate="$(mktemp "${target_file}.XXXXXX")" || return 1
+    if cp "$source_file" "$candidate" && chmod 600 "$candidate" && cmp -s "$source_file" "$candidate" && mv -fT "$candidate" "$target_file"; then
+        return 0
+    fi
+    rm -f "$candidate"
+    return 1
+}
+
+rollback() {
+    timeout -k 2 20 /etc/init.d/adguardhome stop 9>&- >/dev/null 2>&1 || return 1
+    timeout -k 2 10 /etc/init.d/adguardhome disable 9>&- >/dev/null 2>&1 || return 1
+    for cfg in dhcp sheepfold; do
+        [ -f "$STATE/$cfg.after" ] || continue
+        # Чужая запись после нашего commit не разрешает восстановление целого файла
+        [ ! -L "/etc/config/$cfg" ] && [ -f "/etc/config/$cfg" ] || return 1
+        cmp -s "/etc/config/$cfg" "$STATE/$cfg.before" && continue
+        cmp -s "/etc/config/$cfg" "$STATE/$cfg.after" || return 1
+        atomic_copy "$STATE/$cfg.before" "/etc/config/$cfg" || return 1
+    done
+    timeout -k 2 20 /etc/init.d/dnsmasq restart 9>&- >/dev/null 2>&1 || return 1
+    dns_probe 127.0.0.1
+}
+
+cleanup() {
+    code=$?
+    trap - EXIT HUP INT TERM
+    if [ "$SUCCESS" = 0 ] && [ -n "$WORK" ]; then
+        if [ "$CHANGED" = 1 ]; then
+            if rollback; then phase failed_restored; else phase recovery_required; fi
+        else
+            phase failed
+            [ ! -x /etc/init.d/adguardhome ] || {
+                timeout -k 2 20 /etc/init.d/adguardhome stop 9>&- >/dev/null 2>&1 || true
+                timeout -k 2 10 /etc/init.d/adguardhome disable 9>&- >/dev/null 2>&1 || true
+            }
+        fi
+        printf '%s\n' "${ERROR:-installation_failed}" > "$STATE/reason"
+        timeout -k 1 5 "$LIB/sheepfold-log" "LuCI (Изменено на роутере): установка AdGuard Home остановлена, причина ${ERROR:-installation_failed}; проверьте сохранённое состояние восстановления" 9>&- >/dev/null 2>&1 || true
+    fi
+    # Старый официальный init использует другой путь; удаляем только неизменённую нашу заглушку
+    if [ -n "$WORK" ] && [ ! -L /etc/adguardhome.yaml ] && cmp -s /etc/adguardhome.yaml "$WORK/bootstrap"; then
+        rm -f /etc/adguardhome.yaml
+    fi
+    [ -z "$WORK" ] || rm -rf "$WORK"
+    sheepfold_lock_release
+    exit "$code"
+}
+
+make_profile() {
+    . /usr/share/libubox/jshn.sh
+    json_load "$(cat "$PROFILE")"
+    if [ "$1" = final ]; then
+        json_select http; json_add_string address "$LAN_IP:3000"; json_select ..
+        json_select dns; json_add_int port 53
+        json_add_array bind_hosts; json_add_string '' 127.0.0.1; json_add_string '' "$LAN_IP"; json_close_array; json_select ..
+        json_select users; json_select 1; json_add_string password "$HASH"; json_select ..; json_select ..
+    fi
+    json_dump
+}
+
+prepare_uci() {
+    mkdir "$WORK/config" "$WORK/delta"
+    for cfg in dhcp sheepfold adguardhome; do cp "/etc/config/$cfg" "$WORK/config/$cfg"; done
+    old_options="$(uci -q get dhcp.lan.dhcp_option || true)"
+    for option in $old_options; do
+        case "$option" in 6,*|option:dns-server,*) continue ;; esac
+        case "$option" in *[!A-Za-z0-9,.:/_-]*) return 1 ;; esac
+    done
+    stage_uci set 'dhcp.@dnsmasq[0].port=5354'
+    stage_uci set 'dhcp.@dnsmasq[0].cachesize=0'
+    for option in $old_options; do
+        case "$option" in 6,*|option:dns-server,*) stage_uci del_list "dhcp.lan.dhcp_option=$option" ;; esac
+    done
+    stage_uci add_list "dhcp.lan.dhcp_option=6,$LAN_IP"
+    stage_uci set adguardhome.config=adguardhome
+    stage_uci set "adguardhome.config.config_file=$CONFIG"
+    stage_uci set adguardhome.config.work_dir=/tmp/adguardhome
+    stage_uci set adguardhome.config.user=adguardhome
+    stage_uci set adguardhome.config.group=adguardhome
+    for key in config workdir; do
+        if stage_uci -q get "adguardhome.config.$key" >/dev/null; then stage_uci delete "adguardhome.config.$key"; fi
+    done
+    stage_uci set adguardhome.config.verbose=0
+    stage_uci set sheepfold.adguard=integration
+    stage_uci set "sheepfold.adguard.url=http://$LAN_IP:3000"
+    stage_uci set sheepfold.adguard.username=admin
+    stage_uci set "sheepfold.adguard.password=$PASSWORD"
+    if [ "$PODKOP" = 1 ]; then mode=adguard_podkop; else mode=adguard; fi
+    stage_uci set "sheepfold.global.integration_mode=$mode"
+    for cfg in dhcp adguardhome sheepfold; do stage_uci commit "$cfg"; done
+    [ "$(stage_uci get dhcp.@dnsmasq[0].port)" = 5354 ]
+    [ "$(stage_uci get adguardhome.config.config_file)" = "$CONFIG" ]
+    [ "$(stage_uci get sheepfold.global.integration_mode)" = "$mode" ]
+}
+
+stage_uci() { uci -c "$WORK/config" -P "$WORK/delta" "$@"; }
+
+unchanged() {
+    [ -f "/etc/config/$1" ] && [ ! -L "/etc/config/$1" ] || return 1
+    pending="$(uci changes "$1")" || return 1
+    [ -z "$pending" ] || return 1
+    cmp -s "/etc/config/$1" "$STATE/$1.before"
+}
+
+worker() {
+    sheepfold_lock_acquire /var/lock/sheepfold-adguard-install.lock 0 || exit 1
+    trap cleanup EXIT
+    trap 'exit 143' TERM HUP INT
+    preflight || exit 1
+    mkdir -m 700 "$STATE"
+    WORK="$(mktemp -d /tmp/sheepfold-adguard-install.XXXXXX)"
+    printf '%s\n' "$$" > "$STATE/pid"
+    cp /proc/sys/kernel/random/boot_id "$STATE/boot"
+    for cfg in dhcp sheepfold network; do
+        cp "/etc/config/$cfg" "$STATE/$cfg.before"
+        cmp -s "/etc/config/$cfg" "$STATE/$cfg.before" || exit 1
+    done
+    phase installing
+    ERROR=dns_unavailable
+    dns_probe 127.0.0.1
+    ERROR=package_failed
+    # Заглушка с закрытым логином и только loopback не даёт postinst открыть незащищённый мастер
+    mkdir -m 700 /etc/adguardhome
+    make_profile seed > "$WORK/bootstrap"
+    atomic_copy "$WORK/bootstrap" "$CONFIG"
+    atomic_copy "$WORK/bootstrap" /etc/adguardhome.yaml
+    timeout -k 5 90 "$PM" update > "$WORK/package.log" 2>&1 9>&-
+    timeout -k 5 180 "$PM" install adguardhome >> "$WORK/package.log" 2>&1 9>&-
+    timeout -k 2 20 /etc/init.d/adguardhome stop 9>&- >/dev/null 2>&1
+    ERROR=unsupported_version
+    /usr/bin/AdGuardHome --version | grep -Eq 'v0\.107\.79([[:space:]]|$)'
+    ERROR=unsupported_package
+    grep -Fq 'config_file:string:/etc/adguardhome/adguardhome.yaml' /etc/init.d/adguardhome
+    grep -Fq 'procd_set_param user' /etc/init.d/adguardhome
+    id adguardhome >/dev/null 2>&1
+    phase configuring
+    mkdir "$WORK/check"
+    make_profile final > "$WORK/final.json"
+    ERROR=invalid_config
+    timeout -k 2 15 /usr/bin/AdGuardHome --check-config --config "$WORK/final.json" --work-dir "$WORK/check" > "$WORK/check.log" 2>&1
+    ERROR=config_changed
+    prepare_uci
+    unchanged network || exit 1
+    for cfg in dhcp sheepfold; do
+        unchanged "$cfg" || exit 1
+        cp "$WORK/config/$cfg" "$STATE/$cfg.after"
+    done
+    atomic_copy "$WORK/final.json" "$CONFIG"
+    chown adguardhome:adguardhome /etc/adguardhome "$CONFIG"
+    atomic_copy "$WORK/config/adguardhome" /etc/config/adguardhome
+    printf 'http://%s:3000\n' "$LAN_IP" > "$STATE/endpoint"
+    phase switching_dns
+    CHANGED=1
+    atomic_copy "$WORK/config/dhcp" /etc/config/dhcp
+    ERROR=service_failed
+    timeout -k 2 20 /etc/init.d/dnsmasq restart 9>&- >/dev/null 2>&1
+    timeout -k 2 10 /etc/init.d/adguardhome enable 9>&-
+    timeout -k 2 20 /etc/init.d/adguardhome start 9>&- >/dev/null 2>&1
+    printf 'user = "admin:%s"\n' "$PASSWORD" > "$WORK/auth"
+    phase verifying
+    ERROR=verification_failed
+    count=0
+    until curl --noproxy '*' --proto '=http' -fsS --max-time 3 --config "$WORK/auth" \
+        "http://$LAN_IP:3000/control/status" > "$WORK/status" 2>/dev/null; do
+        count=$((count + 1)); [ "$count" -lt 12 ] || exit 1; sleep 1
+    done
+    [ "$(jsonfilter -i "$WORK/status" -e '@.running')" = true ]
+    [ "$(jsonfilter -i "$WORK/status" -e '@.dns_port')" = 53 ]
+    [ "$(jsonfilter -i "$WORK/status" -e '@.protection_enabled')" = true ]
+    dns_probe 127.0.0.1
+    dns_probe "$LAN_IP"
+    ERROR=config_changed
+    unchanged sheepfold || exit 1
+    atomic_copy "$WORK/config/sheepfold" /etc/config/sheepfold
+    # Скачивание списков может ещё идти; установка не выдаёт это за проверку фильтрации LAN
+    phase installed_filters_pending
+    if curl --noproxy '*' --proto '=http' -fsS --max-time 5 --config "$WORK/auth" \
+        "http://$LAN_IP:3000/control/filtering/status" > "$WORK/filters" 2>/dev/null; then
+        counts="$(jsonfilter -i "$WORK/filters" -e '@.filters[@.enabled=true && @.id=1].rules_count' -e '@.filters[@.enabled=true && @.id=2].rules_count')" || counts=''
+        if [ "$(printf '%s\n' "$counts" | awk '$1+0>0 {n++} END {print n+0}')" -eq 2 ]; then phase installed; fi
+    fi
+    SUCCESS=1
+    timeout -k 1 5 "$LIB/sheepfold-log" 'LuCI (Изменено на роутере): AdGuard Home установлен; DNS с устройства домашней сети ещё требуется проверить' 9>&- >/dev/null 2>&1 || true
+}
+
+case "${1:-status}" in
+    status) status ;;
+    start)
+        [ "${2:-}" = confirmed ] || fail confirmation_required
+        preflight || exit 1
+        # Worker не держит RPC открытым во время загрузки пакета; результат читается отдельной командой
+        "$0" worker </dev/null >/dev/null 2>&1 &
+        printf 'status=starting\n'
+        ;;
+    worker) worker ;;
+    *) exit 2 ;;
+esac

@@ -15,6 +15,9 @@ Sheepfold — OpenWRT-пакет для семейного управления 
 
 ## Порядок чтения документации
 
+Для новой установки AdGuard Home из LuCI: [контракт и восстановление](adguard-home-installation.ru.md)
+(§aghinst). Не путать эту отдельную команду с автоматическим управлением URL-фильтром.
+
 1. [`docs/agent-fast-start.ru.md`](agent-fast-start.ru.md) — короткий маршрут нового чата: что проверить и читать, не загружая весь проект в контекст. (§fastagt)
 2. [`docs/architecture/decisions/README.ru.md`](architecture/decisions/README.ru.md) — почему приняты ключевые архитектурные решения и когда их пересматривать (§adrproc).
 3. [`docs/owner-communication-profile.ru.md`](owner-communication-profile.ru.md) — как понимать итеративные требования владельца, различать виды списков и сообщать результат (§usrcomm).

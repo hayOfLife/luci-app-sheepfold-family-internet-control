@@ -1,5 +1,10 @@
 # Current Implementation Status
 
+Source r327 adds the explicit fresh-only [AdGuard Home installer](adguard-home-installation.ru.md)
+(§aghinst): consent, closed bootstrap, resource/version/topology guards, snapshots and
+conditional DNS recovery. Local fixtures and native AGH schema/auth checks are distinct
+from the still-required OpenWrt package/LAN/Podkop/reboot gate; this is not a live deployment record.
+
 ## Bounded clock recovery in source r326
 
 The existing maintenance loop now requests bounded recovery of an implausible date

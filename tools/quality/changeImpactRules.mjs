@@ -373,6 +373,16 @@ export const impactRules = Object.freeze([
     full: true,
   }),
   Object.freeze({
+    id: 'adguardFreshInstall',
+    area: 'Явная новая установка AdGuard Home',
+    pattern: /(?:sheepfold-adguard(?:-install)?$|adguard-install-profile\.json$|features\/integrations\/(?:install|panel)\.js$|^tools\/router-testing\/adguardNativeProbe\.mjs$)/,
+    categories: ['backendFast', 'luci', 'networkIntegration'],
+    checks: ['lintJs'],
+    directTests: Object.freeze(['adguardInstall.test.mjs', 'adguardInstallUi.test.mjs', 'adguardIntegration.test.mjs', 'integrationPanelUi.test.mjs', 'luciPersistenceAdapters.test.mjs', 'testIpkPermissions.test.mjs']),
+    risk: 'high',
+    review: 'Проверить fresh-only, согласие, пароль, RAM, сохранение Podkop, откат DNS и отдельный живой LAN/reboot gate.',
+  }),
+  Object.freeze({
     id: 'androidApps',
     area: 'Android parent/child',
     pattern: /^(?:android|android-child)\//,

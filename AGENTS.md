@@ -197,6 +197,7 @@ Avoid:
 - Never enable a second independent copy of the same site policy silently. Automatic management may add, refresh, enable, or disable only Sheepfold's owned filter; it must preserve every user-created AdGuard Home filter and custom rule.
 - Keep device access control in Sheepfold; do not move Sheepfold device allowlist/blocklist semantics into AdGuard Home. AdGuard Home receives only the generated domain policy scoped to router-observed clients.
 - Do not silently expand the meaning of an already enabled `adguard_auto_manage=1`: it grants control only over Sheepfold's owned URL filter. Every future write to global protection, DNS, clients, DHCP, logs, TLS, rewrites, Safe Search, or blocked services needs its own explicit preview and confirmation. Read `docs/adguard-home-automatic-management-roadmap.ru.md` before extending this adapter (§aghplan).
+- The separate `Install AdGuard Home` action is a fresh-install exception, not additional authority for that adapter. Read `docs/adguard-home-installation.ru.md` and ADR-0032: preserve existing AGH, validate resources/topology/version, use a closed bootstrap and verified snapshots, and never silently retry an interrupted install. The owner explicitly chose public initial `admin` / `password`; warn before confirmation and never copy the router password. Native fixture success does not replace OpenWrt LAN/Podkop/reboot testing (§aghinst).
 
 ## User Agreement And Privacy
 

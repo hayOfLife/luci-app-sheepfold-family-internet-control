@@ -5062,3 +5062,121 @@ msgstr "Не удалось полностью восстановить наст
 #: htdocs/luci-static/resources/sheepfold/features/settings/time.js
 msgid "Could not read the router clock. Time settings were not changed. Check the router before trying again."
 msgstr "Не удалось прочитать часы роутера. Настройки времени не изменены. Проверьте роутер перед повторной попыткой."
+
+#: sheepfold/features/integrations/install.js
+msgid "The AdGuard Home package has an unsupported service layout. DNS settings were not switched."
+msgstr "У пакета AdGuard Home неподдерживаемая схема запуска службы. Настройки DNS не переключены."
+
+msgid "Set your own router password in OpenWrt administration first."
+msgstr "Сначала задайте свой пароль роутера в настройках администрирования OpenWrt."
+
+msgid "AdGuard Home already exists. Its settings will not be overwritten."
+msgstr "AdGuard Home уже установлен или настроен. Его настройки не будут перезаписаны."
+
+msgid "A previous installation needs review. The backup path is shown below."
+msgstr "Требуется проверить предыдущую установку. Ниже указан путь к резервной копии."
+
+msgid "Save or discard pending settings before installation."
+msgstr "Перед установкой сохраните или отмените несохранённые настройки."
+
+msgid "Installation requires at least 48 MiB of free storage and 128 MiB of available RAM."
+msgstr "Для установки необходимо не менее 48 МиБ свободного места и 128 МиБ доступной оперативной памяти."
+
+msgid "This installation profile requires IPv6 to be disabled already. No IPv6 setting is changed automatically."
+msgstr "Для этого профиля IPv6 должен быть уже выключен. Установщик не меняет эту настройку автоматически."
+
+msgid "A required DNS or administration port is already in use."
+msgstr "Необходимый порт DNS или панели управления уже занят."
+
+msgid "This profile supports AdGuard Home 0.107.79 only. DNS settings were not switched."
+msgstr "Этот профиль поддерживает только AdGuard Home 0.107.79. Настройки DNS не переключены."
+
+msgid "The current DNS service is unavailable. Restore it before installation."
+msgstr "Текущая служба DNS недоступна. Восстановите её перед установкой."
+
+msgid "Start Podkop and check internet access before installation."
+msgstr "Перед установкой запустите Podkop и проверьте доступ в интернет."
+
+msgid "The DNS configuration differs from the supported installation profile."
+msgstr "Настройка DNS отличается от поддерживаемого профиля установки."
+
+msgid "Automatic installation supports one dnsmasq instance only."
+msgstr "Автоматическая установка поддерживает только один экземпляр dnsmasq."
+
+msgid "Automatic installation requires one static LAN IPv4 address."
+msgstr "Для автоматической установки нужен постоянный IPv4-адрес роутера в домашней сети."
+
+msgid "The package could not be installed. Existing DNS settings were preserved."
+msgstr "Не удалось установить пакет. Прежние настройки DNS сохранены."
+
+msgid "The new DNS service could not be verified. Check the recovery status."
+msgstr "Не удалось проверить новую службу DNS. Проверьте результат восстановления."
+
+msgid "Settings changed during installation. Check the backup before recovery."
+msgstr "Во время установки настройки изменились. Перед восстановлением проверьте резервную копию."
+
+msgid "Installation is unavailable. Check the router configuration and backup."
+msgstr "Установка недоступна. Проверьте настройки роутера и резервную копию."
+
+msgid "AdGuard Home can be installed on this router."
+msgstr "AdGuard Home можно установить на этот роутер."
+
+msgid "Starting installation..."
+msgstr "Запускаем установку..."
+
+msgid "Downloading and installing AdGuard Home..."
+msgstr "Скачиваем и устанавливаем AdGuard Home..."
+
+msgid "Preparing the AdGuard Home account and DNS settings..."
+msgstr "Подготавливаем учётную запись AdGuard Home и настройки DNS..."
+
+msgid "Switching DNS services..."
+msgstr "Переключаем службы DNS..."
+
+msgid "Checking the new DNS service..."
+msgstr "Проверяем новую службу DNS..."
+
+msgid "AdGuard Home is installed and both filters are loaded. DNS access from a LAN device still needs verification."
+msgstr "AdGuard Home установлен, оба фильтра загружены. Ещё нужно проверить DNS с устройства в домашней сети."
+
+msgid "AdGuard Home is installed. Filter downloads and DNS access from a LAN device still need verification."
+msgstr "AdGuard Home установлен. Ещё нужно проверить загрузку фильтров и DNS с устройства в домашней сети."
+
+msgid "Installation failed. The previous DNS configuration was restored."
+msgstr "Установка не завершена. Прежняя настройка DNS восстановлена."
+
+msgid "Automatic recovery did not complete. Keep the backup and restore DNS manually."
+msgstr "Автоматическое восстановление не завершено. Сохраните резервную копию и восстановите DNS вручную."
+
+msgid "Installation was interrupted. Check the router and the saved backup before continuing."
+msgstr "Установка была прервана. Перед продолжением проверьте роутер и сохранённую резервную копию."
+
+msgid "Installation stopped before switching DNS. The package may remain installed."
+msgstr "Установка остановлена до переключения DNS. Пакет мог остаться установленным."
+
+msgid "Install AdGuard Home"
+msgstr "Установить AdGuard Home"
+
+msgid "Checking installation requirements..."
+msgstr "Проверяем возможность установки..."
+
+msgid "Could not read the installation status. Refresh this page."
+msgstr "Не удалось получить состояние установки. Обновите страницу."
+
+msgid "Installation is still running. Close this dialog and refresh the page later. Do not start another installation."
+msgstr "Установка ещё выполняется. Закройте это окно и обновите страницу позже. Не запускайте повторную установку."
+
+msgid "Install the official OpenWrt package and switch LAN DNS to AdGuard Home, then local dnsmasq on port 5354. Podkop routes and external DNS stay unchanged. Internet names may stop resolving briefly."
+msgstr "Установим официальный пакет OpenWrt. Запросы DNS из домашней сети пойдут через AdGuard Home, затем через dnsmasq на порту 5354. Маршруты и внешний DNS Podkop не изменятся. Сайты могут ненадолго перестать открываться."
+
+msgid "Enable HaGeZi LIGHT and TIF MINI, disable DNS caches, keep 1000 recent DNS queries and one day of statistics in RAM. Filters must download again after reboot. Existing AdGuard Home installations are not changed."
+msgstr "Включим фильтры HaGeZi LIGHT и TIF MINI, выключим DNS-кэши. В оперативной памяти будут храниться 1000 последних DNS-запросов и статистика за сутки. После перезагрузки фильтры скачиваются заново. Уже установленный AdGuard Home не изменяем."
+
+msgid "Initial AdGuard Home login: admin. Password: password. Anyone on your home network who knows these common credentials can change DNS and disable filters. Change them in AdGuard Home after installation and update the integration credentials here. The router password is never copied."
+msgstr "Начальный логин AdGuard Home: admin. Пароль: password. Любой в домашней сети, знающий эти общие данные, сможет изменить DNS и выключить фильтры. После установки смените их в AdGuard Home и обновите данные интеграции здесь. Пароль роутера не копируется."
+
+msgid "Reload this page after installation to load the new integration settings."
+msgstr "После установки обновите страницу, чтобы загрузить новые настройки интеграции."
+
+msgid "A private backup is kept on the router. If verification fails, Sheepfold attempts to restore DNS without overwriting later user changes. No packages are removed automatically."
+msgstr "Закрытая резервная копия останется на роутере. При ошибке проверки Sheepfold попробует восстановить DNS, не затирая более поздние изменения пользователя. Пакеты автоматически не удаляются."

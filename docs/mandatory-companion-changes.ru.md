@@ -30,6 +30,13 @@
 
 ## Настройки, API и runtime
 
+Для отдельной установки AGH синхронизировать `sheepfold-adguard-install`, JSON-профиль,
+LuCI confirmation/status, RU PO/JSON, runtime-hardening и права test-IPK, receipt-проверку
+HTTP в `sheepfold-adguard`, change-impact/category map и [§aghinst](adguard-home-installation.ru.md).
+Минимум: `adguardInstall`, `adguardInstallUi`, `adguardIntegration`, persistence и packaging
+тесты; перед выпуском отдельный OpenWrt LAN/Podkop/reboot gate. Нельзя считать общую
+настройку автоматического фильтра согласием на новую DNS-конфигурацию.
+
 | Если изменяется | Обязательно актуализировать или проверить | Минимальное доказательство | Почему |
 |---|---|---|---|
 | UCI option, тип секции или default | `sheepfold.uci.defaults`, Makefile postinst/recovery, test-IPK builder, migration старого конфига, backup/import/export, hidden settings, LuCI/Android read-model | `backendFast packaging security`, upgrade fixture | Новая установка и обновление не должны получать разные схемы |

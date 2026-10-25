@@ -18,6 +18,16 @@ function fixtureConsumers(helperName) {
 }
 
 describe('change impact advisor §impact1', () => {
+  it('maps the AdGuard installer and its native probe to both consent and rollback tests', () => {
+    for (const path of ['tools/router-testing/adguardNativeProbe.mjs',
+      'package/luci-app-sheepfold-family-internet-control/root/usr/libexec/sheepfold/sheepfold-adguard-install',
+      'package/luci-app-sheepfold-family-internet-control/root/usr/share/sheepfold/adguard-install-profile.json']) {
+      const report = inspectChanges([path]);
+      assert.deepEqual(report.unknown, []);
+      assert.ok(report.directTests.includes('adguardInstall.test.mjs'));
+      assert.ok(report.directTests.includes('adguardInstallUi.test.mjs'));
+    }
+  });
   it('maps the manual native clock probe to recovery checks', () => {
     const report = inspectChanges(['tools/router-testing/timeRecoveryProbe.sh']);
     assert.deepEqual(report.unknown, []);

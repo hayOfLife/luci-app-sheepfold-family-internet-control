@@ -1,0 +1,34 @@
+{
+  "schema_version": 34,
+  "http": { "address": "127.0.0.1:3000", "session_ttl": "24h", "pprof": { "enabled": false } },
+  "users": [{ "name": "admin", "password": "!" }],
+  "auth_attempts": 5,
+  "block_auth_min": 15,
+  "language": "ru",
+  "theme": "auto",
+  "dns": {
+    "bind_hosts": ["127.0.0.1"], "port": 5355,
+    "upstream_dns": ["127.0.0.1:5354"], "upstream_dns_file": "",
+    "fallback_dns": [], "bootstrap_dns": [],
+    "cache_enabled": false, "cache_size": 0, "cache_optimistic": false,
+    "ratelimit": 0, "refuse_any": true,
+    "use_private_ptr_resolvers": true, "local_ptr_upstreams": ["127.0.0.1:5354"],
+    "serve_http3": false, "use_http3_upstreams": false
+  },
+  "tls": { "enabled": false },
+  "dhcp": { "enabled": false },
+  "querylog": { "enabled": true, "file_enabled": false, "size_memory": 1000, "interval": "6h" },
+  "statistics": { "enabled": true, "interval": "24h" },
+  "filters": [
+    { "enabled": true, "id": 1, "name": "HaGeZi Multi LIGHT", "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/light.txt" },
+    { "enabled": true, "id": 2, "name": "HaGeZi Threat Intelligence Feeds MINI", "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/tif.mini.txt" }
+  ],
+  "whitelist_filters": [], "user_rules": [],
+  "filtering": {
+    "protection_enabled": true, "filtering_enabled": true,
+    "filters_update_interval": 24, "max_http_size": "16MB",
+    "parental_enabled": false, "safebrowsing_enabled": false,
+    "safe_search": { "enabled": false }, "blocked_services": { "ids": [] }, "rewrites": []
+  },
+  "log": { "enabled": true, "verbose": false, "file": "" }
+}

@@ -37,6 +37,7 @@ export const testCategories = Object.freeze({
     'testCategories.test.mjs',
   ],
   luci: [
+    'adguardInstallUi.test.mjs',
     'timeSettingsLifecycle.test.mjs',
     'timeTransactionRecovery.test.mjs',
     'timeSaveConfirmation.test.mjs',
@@ -256,6 +257,7 @@ export const testCategories = Object.freeze({
     'updateTransportSafety.test.mjs',
   ],
   backendFast: [
+    'adguardInstall.test.mjs',
     'timeRecoveryRuntime.test.mjs',
     'deviceInventoryAggregation.test.mjs',
     'nativeMessageRelayCrypto.test.mjs',
@@ -304,6 +306,7 @@ export const testCategories = Object.freeze({
     'schedulePriorityUi.test.mjs',
   ],
   networkIntegration: [
+    'adguardInstall.test.mjs',
     'homeNetworkAccess.test.mjs',
     'adguardIntegration.test.mjs',
     'portableShellAndStatus.test.mjs',

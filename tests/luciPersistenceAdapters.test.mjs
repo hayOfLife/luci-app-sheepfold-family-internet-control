@@ -41,6 +41,14 @@ function fakeUci(initial = {}) {
 }
 
 describe('LuCI persistence adapters §persist1', () => {
+  it('keeps the installed local AdGuard address but rejects a different plain HTTP server', () => {
+    const settings = loadModule('sheepfold/features/settings/persistence.js', {
+      _: (text) => text,
+    }).create({ sectionValue: () => 'http://192.168.7.1:3000' });
+    assert.doesNotThrow(() => settings.validate({ 'adguard.url': 'http://192.168.7.1:3000' }));
+    assert.throws(() => settings.validate({ 'adguard.url': 'http://192.168.7.2:3000' }), /Use HTTPS/);
+    assert.doesNotThrow(() => settings.validate({ 'adguard.url': 'https://agh.example' }));
+  });
   it('betaProfileUsesExplicitConfirmationAndOnlyStagesItsDocumentedSettings', () => {
     let consent = false;
     const drafts = [];

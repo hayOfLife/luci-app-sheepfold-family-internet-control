@@ -5,6 +5,7 @@ const luciGlobals = {
   E: 'readonly',
   L: 'readonly',
   _: 'readonly',
+  adguardInstall: 'readonly',
   Request: 'readonly',
   administratorEditor: 'readonly',
   administratorModel: 'readonly',

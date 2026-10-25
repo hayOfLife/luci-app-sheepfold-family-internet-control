@@ -275,6 +275,14 @@ case "$command" in
     home-network-configure)
         exec /usr/libexec/sheepfold/sheepfold-home-network configure "${2:-}" "${3:-}"
         ;;
+    adguard-install-status)
+        [ "$#" -eq 1 ] || exit 2
+        exec /usr/libexec/sheepfold/sheepfold-adguard-install status
+        ;;
+    adguard-install-start)
+        [ "$#" -eq 2 ] && [ "$2" = confirmed ] || exit 2
+        exec /usr/libexec/sheepfold/sheepfold-adguard-install start confirmed
+        ;;
     root-password-status)
         root_password_status
         ;;

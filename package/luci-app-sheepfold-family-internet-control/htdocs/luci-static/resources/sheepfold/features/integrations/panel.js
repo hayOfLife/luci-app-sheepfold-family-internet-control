@@ -1,5 +1,6 @@
 'use strict';
 'require baseclass';
+'require sheepfold.features.integrations.install as adguardInstall';
 
 function usesPodkop(mode) {
 	return mode === 'podkop' || mode === 'adguard_podkop';
@@ -238,7 +239,8 @@ function render(deps) {
 		E('div', { 'class': 'sf-grid two' }, [
 			E('div', { 'class': 'sf-box sf-status-card' }, [
 				E('h4', {}, _('AdGuard Home status')),
-				E('p', {}, _('AdGuard Home filters DNS requests after Sheepfold allows a device. It helps block ads, trackers, and unwanted domains.'))
+				E('p', {}, _('AdGuard Home filters DNS requests after Sheepfold allows a device. It helps block ads, trackers, and unwanted domains.')),
+				adguardInstall.render({ run: deps.run, icon: deps.icon, isDirty: deps.isDirty })
 			]),
 			E('div', { 'class': 'sf-box sf-status-card' }, [
 				E('h4', {}, _('Podkop status')),

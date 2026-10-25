@@ -25,6 +25,9 @@ function create(deps) {
 		defaultLogCachePath: deps.defaultLogCachePath
 	});
 	var integrationUi = {
+		run: deps.run,
+		icon: deps.icon,
+		isDirty: deps.draft.isDirty,
 		value: deps.value,
 		setOption: deps.setOption,
 		setOptions: deps.setOptions,

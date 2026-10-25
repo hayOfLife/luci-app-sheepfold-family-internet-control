@@ -96,6 +96,13 @@ function controlText(ipkPath, memberPath) {
 }
 
 describe('test IPK executable permissions', () => {
+  it('ships the explicit AdGuard installer and the closed initial profile', () => {
+    const ipk = buildTestIpk();
+    assert.equal(tarMode(ipk, './usr/libexec/sheepfold/sheepfold-adguard-install'), '0o755');
+    const profile = JSON.parse(dataText(ipk, './usr/share/sheepfold/adguard-install-profile.json'));
+    assert.equal(profile.http.address, '127.0.0.1:3000');
+    assert.equal(profile.users[0].password, '!');
+  });
   it('ships the common journal boundary and connects both consumers', () => {
     const ipk = buildTestIpk();
     const base = './usr/libexec/sheepfold/';

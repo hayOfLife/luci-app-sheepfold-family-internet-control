@@ -65,6 +65,13 @@ adguard_podkop
 
 ## Configuration UX
 
+Source r327 adds a separate **Install AdGuard Home** action for a fresh installation,
+with explicit consent, resource/topology checks and configuration recovery snapshots.
+It never overwrites existing AGH and does not broaden `adguard_auto_manage` permissions.
+The owner chose public initial `admin` / `password`; the confirmation warns about LAN
+access. See [the installation contract and unverified OpenWrt boundaries](adguard-home-installation.ru.md)
+(§aghinst). The reference NanoPi profile is not applied blindly to small routers.
+
 When the user selects an integration mode, LuCI should show integration-specific notes before applying changes.
 
 Saving the integration settings is the explicit confirmation for Sheepfold-owned changes. Routine refreshes may then update the owned filter without another modal. Broad third-party configuration changes still require a separate preview and confirmation.
