@@ -5,6 +5,15 @@ Source r327 adds the explicit fresh-only [AdGuard Home installer](adguard-home-i
 conditional DNS recovery. Local fixtures and native AGH schema/auth checks are distinct
 from the still-required OpenWrt package/LAN/Podkop/reboot gate; this is not a live deployment record.
 
+Source r328 repairs partial AGH rollback: a safely restored DHCP config is applied to
+dnsmasq even if a concurrent Sheepfold edit or an AGH autostart-disable failure requires
+manual recovery. Foreign DHCP changes and a failed AGH stop still block DNS mutation.
+Rollback also requires a successfully read empty UCI changes queue for each config:
+pending or unreadable DHCP changes block restart; the same Sheepfold conflict requires
+manual recovery without preventing safe DNS restoration. User drafts are never reverted.
+Regression fixtures distinguish restored files from the simulated active DNS config;
+live OpenWrt validation remains pending. See [B170](bug-register.ru.md#b170-откат-agh-возвращал-файл-dhcp-но-не-работающий-dns).
+
 ## Bounded clock recovery in source r326
 
 The existing maintenance loop now requests bounded recovery of an implausible date

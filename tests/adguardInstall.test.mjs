@@ -1,6 +1,6 @@
 /*
  * Выполняет транзакцию настоящего shell-установщика в удаляемом .build-fixture
- * Пакетный менеджер, UCI-подготовка и AGH моделируются: проверяются отказы, откат,
+ * Пакетный менеджер, UCI-подготовка/черновики и AGH моделируются: проверяются отказы, откат,
  * защита чужих изменений и bootstrap-профиль, но не procd/DNS на живом OpenWrt
  */
 import assert from 'node:assert/strict';
@@ -48,14 +48,30 @@ echo "package:$1" >> "$FIXTURE/trace"
   put('chown', '#!/bin/sh\nexit 0\n');
   put('aghBinary', '#!/bin/sh\n[ "$1" != --version ] || echo "AdGuard Home, version v0.107.79"\nexit 0\n');
   if (!options.realPreflight)
-    put('adguardhome', `#!/bin/sh\n# config_file:string:${local(join(root, 'etc/adguardhome/adguardhome.yaml'))}\n# procd_set_param user\necho "adguard:$1" >> "$FIXTURE/trace"\nexit 0\n`);
+    put('adguardhome', `#!/bin/sh
+# config_file:string:${local(join(root, 'etc/adguardhome/adguardhome.yaml'))}
+# procd_set_param user
+echo "adguard:$1" >> "$FIXTURE/trace"
+if [ "$1" = stop ] && [ "$FAIL_STOP" = 1 ] && grep -q 'adguard:start' "$FIXTURE/trace"; then exit 1; fi
+[ "$1" != disable ] || [ "$FAIL_DISABLE" != 1 ]
+`);
   put('pidof', '#!/bin/sh\nexit 1\n');
   put('id', '#!/bin/sh\nexit 0\n');
-  put('dnsmasq', '#!/bin/sh\necho "dnsmasq:$1" >> "$FIXTURE/trace"\nexit 0\n');
+  put('dnsmasq', `#!/bin/sh
+echo "dnsmasq:$1" >> "$FIXTURE/trace"
+if [ "$1" = restart ]; then
+  if [ "$FAIL_RESTART" = 1 ] && [ -f "$FIXTURE/dns-runtime" ]; then exit 1; fi
+  cp "$FIXTURE/etc/config/dhcp" "$FIXTURE/dns-runtime"
+fi
+`);
   put('sheepfold-log', '#!/bin/sh\necho journal >> "$FIXTURE/trace"\n');
   put('uci', `#!/bin/sh
 case "$*" in
- changes*) exit 0 ;; *network.lan.proto) echo static ;; *network.lan.ipaddr) echo 192.168.7.1 ;;
+ changes*)
+  [ ! -f "$FIXTURE/changes-error-$2" ] || exit 1
+  [ ! -f "$FIXTURE/pending-$2" ] || cat "$FIXTURE/pending-$2"
+  exit 0 ;;
+ *network.lan.proto) echo static ;; *network.lan.ipaddr) echo 192.168.7.1 ;;
  'show dhcp') echo 'dhcp.main=dnsmasq' ;; *'].port') echo 53 ;; *dhcp.lan.interface) echo lan ;;
  *dhcp.lan.ignore) echo 0 ;; *'].server') echo 127.0.0.42 ;; *'].noresolv') echo 1 ;; *) exit 1 ;;
 esac
@@ -71,6 +87,8 @@ esac
   put('curl', `#!/bin/sh
 if [ "$CONCURRENT_CHANGE" = 1 ]; then echo user-change > "$FIXTURE/etc/config/dhcp"; fi
 if [ "$LATE_SHEEPFOLD" = 1 ]; then echo user-change > "$FIXTURE/etc/config/sheepfold"; fi
+case "$PENDING_CONFIG" in dhcp|sheepfold) echo pending-user-change > "$FIXTURE/pending-$PENDING_CONFIG" ;; esac
+case "$FAIL_CHANGES" in dhcp|sheepfold) touch "$FIXTURE/changes-error-$FAIL_CHANGES" ;; esac
 printf '{}'
 `);
   put('nslookup', `#!/bin/sh
@@ -105,7 +123,7 @@ prepare_uci() {
     run(extra = {}) {
       return completedProcess(spawnSync('bash', ['-c', 'export PATH="$FIXTURE/bin:$PATH"; exec sh "$FIXTURE/bin/installer"'], {
         cwd: repo, encoding: 'utf8', timeout: runtimeTimeout(20000),
-        env: { ...process.env, FIXTURE: local(root), FAIL_PACKAGE: '0', FAIL_DNS: '0', CONCURRENT_CHANGE: '0', LATE_SHEEPFOLD: '0', LOCAL_ROUTE: '0', EMPTY_LAN: '0', ...extra },
+        env: { ...process.env, FIXTURE: local(root), FAIL_PACKAGE: '0', FAIL_DNS: '0', FAIL_DISABLE: '0', FAIL_STOP: '0', FAIL_RESTART: '0', CONCURRENT_CHANGE: '0', LATE_SHEEPFOLD: '0', LOCAL_ROUTE: '0', EMPTY_LAN: '0', PENDING_CONFIG: '', FAIL_CHANGES: '', ...extra },
       }), 'AdGuard installer fixture');
     },
   };
@@ -214,6 +232,8 @@ describe('AdGuard explicit installation', () => {
     const result = f.run({ FAIL_DNS: '1', CONCURRENT_CHANGE: '1' });
     assert.notEqual(result.status, 0);
     assert.equal(f.read('etc/config/dhcp'), 'user-change');
+    assert.equal(f.read('dns-runtime'), 'dhcp-new');
+    assert.equal(f.read('trace').match(/dnsmasq:restart/g).length, 1);
     assert.equal(f.read('etc/sheepfold/adguard-install/status'), 'recovery_required');
     assert.equal(f.read('etc/sheepfold/adguard-install/dhcp.before'), 'dhcp-original');
   });
@@ -224,6 +244,60 @@ describe('AdGuard explicit installation', () => {
     assert.notEqual(result.status, 0);
     assert.equal(f.read('etc/config/sheepfold'), 'user-change');
     assert.equal(f.read('etc/config/dhcp'), 'dhcp-original');
+    assert.equal(f.read('dns-runtime'), 'dhcp-original');
+    assert.equal(f.read('etc/sheepfold/adguard-install/status'), 'recovery_required');
+  });
+
+  it('restores running DNS even if disabling AdGuard autostart fails', (t) => {
+    const f = fixture(t);
+    const result = f.run({ FAIL_DNS: 'once', FAIL_DISABLE: '1' });
+    assert.notEqual(result.status, 0);
+    assert.equal(f.read('etc/config/dhcp'), 'dhcp-original');
+    assert.equal(f.read('dns-runtime'), 'dhcp-original');
+    assert.equal(f.read('etc/sheepfold/adguard-install/status'), 'recovery_required');
+  });
+
+  for (const failure of ['pending', 'unreadable']) {
+    it(`does not restart DNS when DHCP changes are ${failure}`, (t) => {
+      const f = fixture(t);
+      const result = f.run({ FAIL_DNS: 'once', [failure === 'pending' ? 'PENDING_CONFIG' : 'FAIL_CHANGES']: 'dhcp' });
+      assert.notEqual(result.status, 0);
+      assert.equal(f.read('etc/config/dhcp'), 'dhcp-new');
+      assert.equal(f.read('dns-runtime'), 'dhcp-new');
+      assert.equal(f.read('trace').match(/dnsmasq:restart/g).length, 1);
+      assert.equal(f.read('etc/sheepfold/adguard-install/status'), 'recovery_required');
+      assert.equal(f.read('etc/sheepfold/adguard-install/dhcp.before'), 'dhcp-original');
+      if (failure === 'pending') assert.equal(f.read('pending-dhcp'), 'pending-user-change');
+    });
+
+    it(`restores DNS but requires recovery when Sheepfold changes are ${failure}`, (t) => {
+      const f = fixture(t);
+      const result = f.run({ FAIL_DNS: 'once', [failure === 'pending' ? 'PENDING_CONFIG' : 'FAIL_CHANGES']: 'sheepfold' });
+      assert.notEqual(result.status, 0);
+      assert.equal(f.read('etc/config/sheepfold'), 'sheepfold-original');
+      assert.equal(f.read('etc/config/dhcp'), 'dhcp-original');
+      assert.equal(f.read('dns-runtime'), 'dhcp-original');
+      assert.equal(f.read('etc/sheepfold/adguard-install/status'), 'recovery_required');
+      if (failure === 'pending') assert.equal(f.read('pending-sheepfold'), 'pending-user-change');
+    });
+  }
+
+  it('does not report recovery when restored DNS cannot restart', (t) => {
+    const f = fixture(t);
+    const result = f.run({ FAIL_DNS: 'once', FAIL_RESTART: '1' });
+    assert.notEqual(result.status, 0);
+    assert.equal(f.read('etc/config/dhcp'), 'dhcp-original');
+    assert.equal(f.read('dns-runtime'), 'dhcp-new');
+    assert.equal(f.read('etc/sheepfold/adguard-install/status'), 'recovery_required');
+  });
+
+  it('does not restore port 53 while stopping AdGuard fails', (t) => {
+    const f = fixture(t);
+    const result = f.run({ FAIL_DNS: 'once', FAIL_STOP: '1' });
+    assert.notEqual(result.status, 0);
+    assert.equal(f.read('etc/config/dhcp'), 'dhcp-new');
+    assert.equal(f.read('dns-runtime'), 'dhcp-new');
+    assert.equal(f.read('trace').match(/dnsmasq:restart/g).length, 1);
     assert.equal(f.read('etc/sheepfold/adguard-install/status'), 'recovery_required');
   });
 

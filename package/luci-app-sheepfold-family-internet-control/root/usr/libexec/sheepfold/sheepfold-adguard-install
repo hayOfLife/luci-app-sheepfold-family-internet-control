@@ -110,19 +110,27 @@ atomic_copy() {
     return 1
 }
 
+restore_config() {
+    # Чужой файл или UCI-черновик запрещает откат: restart может подхватить ещё не сохранённые настройки
+    [ ! -L "/etc/config/$1" ] && [ -f "/etc/config/$1" ] || return 1
+    pending="$(uci changes "$1")" || return 1
+    [ -z "$pending" ] || return 1
+    cmp -s "/etc/config/$1" "$STATE/$1.before" && return 0
+    [ -f "$STATE/$1.after" ] && [ ! -L "$STATE/$1.after" ] || return 1
+    cmp -s "/etc/config/$1" "$STATE/$1.after" || return 1
+    atomic_copy "$STATE/$1.before" "/etc/config/$1"
+}
+
 rollback() {
     timeout -k 2 20 /etc/init.d/adguardhome stop 9>&- >/dev/null 2>&1 || return 1
-    timeout -k 2 10 /etc/init.d/adguardhome disable 9>&- >/dev/null 2>&1 || return 1
-    for cfg in dhcp sheepfold; do
-        [ -f "$STATE/$cfg.after" ] || continue
-        # Чужая запись после нашего commit не разрешает восстановление целого файла
-        [ ! -L "/etc/config/$cfg" ] && [ -f "/etc/config/$cfg" ] || return 1
-        cmp -s "/etc/config/$cfg" "$STATE/$cfg.before" && continue
-        cmp -s "/etc/config/$cfg" "$STATE/$cfg.after" || return 1
-        atomic_copy "$STATE/$cfg.before" "/etc/config/$cfg" || return 1
-    done
+    rollback_failed=0
+    timeout -k 2 10 /etc/init.d/adguardhome disable 9>&- >/dev/null 2>&1 || rollback_failed=1
+    restore_config dhcp || return 1
+    # Конфликт настроек Sheepfold не должен оставлять DNS на уже остановленном AGH
+    restore_config sheepfold || rollback_failed=1
     timeout -k 2 20 /etc/init.d/dnsmasq restart 9>&- >/dev/null 2>&1 || return 1
-    dns_probe 127.0.0.1
+    dns_probe 127.0.0.1 || return 1
+    [ "$rollback_failed" = 0 ]
 }
 
 cleanup() {
