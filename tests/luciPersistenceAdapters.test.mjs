@@ -123,7 +123,7 @@ describe('LuCI persistence adapters §persist1', () => {
       mutate: async (configs, stage) => { events.push(['mutate', [...configs]]); return { stageResult: stage() }; }, reload: async () => {}, discard: async () => {} };
     const adapter = loadModule('sheepfold/features/devices/persistence.js').create({
       uci, persistence, accessLists: { updatedValues: (_current, mac, enabled) => enabled ? [mac] : [] }, normalizeMac: (value) => String(value || '').toUpperCase(),
-      generatedSectionName: (prefix) => `${prefix}_AA`, normalizeGroupName: (value) => value, notConfiguredGroup: 'Not configured', isAdminDevice: () => false,
+      generatedSectionName: (prefix, mac) => `${prefix}_${mac}`, normalizeGroupName: (value) => value, notConfiguredGroup: 'Not configured', isAdminDevice: () => false,
       noRestrictionsGroupName: () => 'No restrictions', personalDevicesGroupName: () => 'Personal devices', markNoRestrictionsExcluded() {}, markPersonalDevicesExcluded() {},
       run: async (args) => { events.push(args.join(':')); return { code: 0 }; }, ensureOk() {}, refreshSiteStatus: async () => events.push('site-status'),
       invalidMacMessage: () => 'bad mac', accessRuntimeError: () => 'access failed', siteRuntimeError: () => 'site failed', action: async () => ({ result: {} }),
@@ -134,6 +134,20 @@ describe('LuCI persistence adapters §persist1', () => {
     assert.equal(result.runtimeApplied, true);
     assert.deepEqual(events.slice(-3), ['schedule-sync', 'site-lists-apply', 'site-status']);
     assert.ok(uci.calls.some((call) => call[0] === 'set' && call[1] === 'dhcp' && call[3] === 'ip'));
+    const device = { id: '1', mac: 'AA', configSection: 'device_1', staticSection: result.staticSectionName, group: 'Old' };
+    const settings = { name: 'Телефон ребёнка', ip: '192.168.1.10', group: 'Children', deviceType: 'phone', status: 'allow', staticLease: true };
+    let start = uci.calls.length;
+    await adapter.persistSettings(device, settings);
+    assert.ok(uci.calls.slice(start).some((call) => call[0] === 'set' && call[1] === 'sheepfold' && call[3] === 'name' && call[4] === settings.name));
+    assert.ok(uci.calls.slice(start).some((call) => call[0] === 'set' && call[1] === 'dhcp' && call[3] === 'name' && call[4] === 'Phone'));
+    uci.set('dhcp', result.staticSectionName, 'name', settings.name);
+    start = uci.calls.length;
+    await adapter.persistSettings(device, settings);
+    assert.ok(uci.calls.slice(start).some((call) => call[0] === 'unset' && call[1] === 'dhcp' && call[3] === 'name'));
+    start = uci.calls.length;
+    const newLease = await adapter.persistSettings({ id: '2', mac: 'BB', group: 'Old' }, { ...settings, status: 'new' });
+    assert.ok(uci.calls.slice(start).some((call) => call[0] === 'unset' && call[1] === 'dhcp' && call[2] === newLease.staticSectionName && call[3] === 'name'));
+    assert.equal(uci.calls.slice(start).some((call) => call[0] === 'set' && call[1] === 'dhcp' && call[3] === 'name'), false);
   });
 
   it('labels access runtime failure as post-commit rather than a rolled-back save', async () => {

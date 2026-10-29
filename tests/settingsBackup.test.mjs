@@ -111,6 +111,15 @@ describe('settings backup and restore', () => {
     assert.throws(() => backup.validate(payload), /conflicting_device_lists/);
   });
 
+  it('rejects a DHCP hostname that would stop dnsmasq', () => {
+    const backup = loadBackupModel();
+    const payload = backup.build(sourceSections(), false);
+    payload.configs.dhcp[0].options.name = 'Телефон ребёнка';
+    assert.throws(() => backup.validate(payload), /invalid_dhcp_hostname/);
+    payload.configs.dhcp[0].options.name = 'ChildPhone';
+    assert.equal(backup.validate(payload).configs.dhcp[0].options.name, 'ChildPhone');
+  });
+
   it('does not allow readable JSON to smuggle unencrypted secrets', () => {
     const backup = loadBackupModel();
     const payload = backup.build(sourceSections(), false);

@@ -58,6 +58,11 @@ function safeOptionName(value) {
 		value !== '__proto__' && value !== 'prototype' && value !== 'constructor';
 }
 
+function safeDhcpHostname(value) {
+	return typeof value === 'string' && value.length <= 63 &&
+		/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(value);
+}
+
 function normalizedValue(value) {
 	var values = Array.isArray(value) ? value : [value];
 
@@ -144,6 +149,8 @@ function validateSection(section, config, names, containsSecrets) {
 		value = normalizedValue(section.options[option]);
 		if (!containsSecrets && secretOption(option) && value !== secretPlaceholder)
 			throw new Error('unencrypted_secrets_forbidden');
+		if (config === 'dhcp' && option === 'name' && !safeDhcpHostname(value))
+			throw new Error('invalid_dhcp_hostname');
 		options[option] = value;
 	});
 	if (Object.keys(options).length > maxOptionsPerSection)

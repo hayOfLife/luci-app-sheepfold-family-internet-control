@@ -23,6 +23,11 @@ function create(deps) {
 		return mac;
 	}
 
+	function validDhcpHostname(name) {
+		return typeof name === 'string' && name.length <= 63 &&
+			/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(name);
+	}
+
 	function namedSection(config, name) {
 		return deps.persistence.sections(config).filter(function (section) {
 			return section['.name'] === name;
@@ -160,6 +165,7 @@ function create(deps) {
 		var newGroup = deps.normalizeGroupName(payload.group || notConfiguredGroup);
 		var status = payload.status;
 		var adminDevice = deps.isAdminDevice(device);
+		var dhcpName;
 		var result;
 		if (adminDevice) {
 			newGroup = notConfiguredGroup;
@@ -200,9 +206,14 @@ function create(deps) {
 
 		if (payload.staticLease) {
 			staticSectionName = ensureStaticDhcpSection(device);
+			// Отображаемое имя может быть русским, но dnsmasq получит только безопасный hostname
+			dhcpName = validDhcpHostname(payload.name) ? payload.name : deps.uci.get('dhcp', staticSectionName, 'name');
 			deps.uci.set('dhcp', staticSectionName, 'mac', mac);
 			deps.uci.set('dhcp', staticSectionName, 'ip', payload.ip);
-			deps.uci.set('dhcp', staticSectionName, 'name', payload.name);
+			if (validDhcpHostname(dhcpName))
+				deps.uci.set('dhcp', staticSectionName, 'name', dhcpName);
+			else
+				deps.uci.unset('dhcp', staticSectionName, 'name');
 		} else if (oldStaticSection) {
 			deps.uci.remove('dhcp', oldStaticSection);
 		}

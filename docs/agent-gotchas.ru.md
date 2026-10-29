@@ -330,6 +330,7 @@
 - SDK уже задаёт `_FORTIFY_SOURCE`: сначала `-U`, затем своё `-D`, не отключать `-Werror`. SDK хранить на диске, переиспользовать cache и проверять живой `make` после обрыва SSH: [helper README](../package/sheepfold-message-relay-crypto/README.ru.md) (§mrelay1).
 - Лимит событий detector считает попытки, включая отказ lock; счётчик только успешных запусков допускает неограниченный обход очереди при ошибке: [device-detection.ru.md](device-detection.ru.md) (§detload).
 - В detector TSV нужны placeholders и для IP, и для hostname; `/regex/i` не является case-insensitive синтаксисом awk. Старый DHCP IP не должен вытеснять live LAN IP: [автоопределение](device-detection.ru.md) (§devpas1, §detload).
+- Отображаемое имя карточки устройства и `dhcp host.name` имеют разные контракты: русское имя с пробелом допустимо в Sheepfold, но может остановить `dnsmasq`, если попасть в постоянную аренду. Сохраняйте безопасный ASCII hostname отдельно либо оставляйте его пустым; при импорте резервной копии отклоняйте некорректное имя до изменения UCI (B171).
 
 - Не пытайтесь проксировать через VPS существующий `/api/v1/*` или передавать туда local Android Bearer. Для `§mrelay1` нужны отдельные router/phone identities, AES-GCM-authenticated E2E envelopes, bounded TTL/deduplication и политика `local_preferred`; недоступность сервера дома должна оставлять локальный pinned HTTPS рабочим. Точные параметры и частичный статус реализации хранятся в [`docs/android-router-message-relay.ru.md`](android-router-message-relay.ru.md).
 
